@@ -144,6 +144,20 @@ h1 {
     background-color: rgba(173, 216, 230, 0.7);
 }
 
+/* Chess piece colors */
+.piece {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.piece svg {
+    width: 80%;
+    height: 80%;
+}
+
 @media (max-width: 768px) {
     .container {
         padding: 10px;

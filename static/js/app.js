@@ -207,14 +207,17 @@ document.addEventListener('DOMContentLoaded', () => {
         // Clear all squares
         const squares = document.querySelectorAll('.square');
         squares.forEach(square => {
-            square.textContent = '';
+            square.innerHTML = '';
         });
         
         // Place pieces on the board
         for (const [square, piece] of Object.entries(board)) {
             const squareElement = document.querySelector(`.square[data-square="${square}"]`);
-            if (squareElement) {
-                squareElement.textContent = chess.getPieceSymbol(piece);
+            if (squareElement && chessPieces[piece]) {
+                const pieceElement = document.createElement('div');
+                pieceElement.className = 'piece';
+                pieceElement.innerHTML = chessPieces[piece];
+                squareElement.appendChild(pieceElement);
             }
         }
         
