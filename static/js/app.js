@@ -210,12 +210,25 @@ document.addEventListener('DOMContentLoaded', () => {
             square.innerHTML = '';
         });
         
+        // Check if we need to flip the board
+        const shouldFlipBoard = playerColor === 'black';
+        
+        // Apply board orientation
+        if (shouldFlipBoard) {
+            chessboard.classList.add('flipped');
+        } else {
+            chessboard.classList.remove('flipped');
+        }
+        
         // Place pieces on the board
         for (const [square, piece] of Object.entries(board)) {
             const squareElement = document.querySelector(`.square[data-square="${square}"]`);
             if (squareElement && chessPieces[piece]) {
                 const pieceElement = document.createElement('div');
                 pieceElement.className = 'piece';
+                if (shouldFlipBoard) {
+                    pieceElement.classList.add('flipped');
+                }
                 pieceElement.innerHTML = chessPieces[piece];
                 squareElement.appendChild(pieceElement);
             }

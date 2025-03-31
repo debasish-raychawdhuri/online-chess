@@ -105,6 +105,11 @@ h1 {
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
 }
 
+/* Flipped board for black player */
+.chessboard.flipped {
+    transform: rotate(180deg);
+}
+
 .square {
     display: flex;
     justify-content: center;
@@ -151,6 +156,11 @@ h1 {
     display: flex;
     justify-content: center;
     align-items: center;
+}
+
+/* Flip pieces back when board is flipped */
+.piece.flipped {
+    transform: rotate(180deg);
 }
 
 .piece svg {
