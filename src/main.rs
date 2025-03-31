@@ -3,7 +3,7 @@ use actix_files as fs;
 use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer, Responder};
 use actix_web_actors::ws;
 use actix::prelude::*;
-use chess::{ChessMove, Color, Game, GameResult, MoveGen, Square};
+use chess::{ChessMove, Color, Game, GameResult, MoveGen, Piece, Square};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -111,6 +111,7 @@ struct ClientMessage {
     color_preference: Option<String>,
     start_time_minutes: Option<u64>,
     increment_seconds: Option<u64>,
+    promote_to: Option<String>,
 }
 
 // Message sent from server to client
@@ -592,8 +593,22 @@ impl ChessWebSocket {
             
             // Check if the piece belongs to the player
             if let Some(_piece) = game.current_position().piece_on(from_square) {
+                // Check if this is a pawn promotion move
+                let promotion_piece = match msg.promote_to {
+                    Some(ref piece) => {
+                        match piece.as_str() {
+                            "queen" => Some(Piece::Queen),
+                            "rook" => Some(Piece::Rook),
+                            "bishop" => Some(Piece::Bishop),
+                            "knight" => Some(Piece::Knight),
+                            _ => None,
+                        }
+                    },
+                    None => None,
+                };
+                
                 // Try to make the move
-                let chess_move = ChessMove::new(from_square, to_square, None);
+                let chess_move = ChessMove::new(from_square, to_square, promotion_piece);
                 
                 if game.make_move(chess_move) {
                     // Update timers

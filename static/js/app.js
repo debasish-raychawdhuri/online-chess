@@ -369,14 +369,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     // Check if this is a valid move
                     if (validMoves.includes(squareName)) {
-                        // Make the move
-                        const message = {
-                            message_type: 'move',
-                            move_from: fromSquare,
-                            move_to: squareName
-                        };
+                        // Check if this is a pawn promotion move
+                        const isPawnPromotion = isPawnPromotionMove(fromSquare, squareName);
                         
-                        socket.send(JSON.stringify(message));
+                        if (isPawnPromotion) {
+                            // Show promotion dialog
+                            showPromotionDialog(fromSquare, squareName);
+                        } else {
+                            // Make the regular move
+                            const message = {
+                                message_type: 'move',
+                                move_from: fromSquare,
+                                move_to: squareName
+                            };
+                            
+                            socket.send(JSON.stringify(message));
+                        }
                         
                         // Reset selection
                         selectedSquare = null;
@@ -531,14 +539,20 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             // If a square is already selected, try to make a move
             if (validMoves.includes(squareName)) {
-                // Make the move
-                const message = {
-                    message_type: 'move',
-                    move_from: selectedSquare,
-                    move_to: squareName
-                };
-                
-                socket.send(JSON.stringify(message));
+                // Check if this is a pawn promotion move
+                if (isPawnPromotionMove(selectedSquare, squareName)) {
+                    // Show promotion dialog instead of sending move directly
+                    showPromotionDialog(selectedSquare, squareName);
+                } else {
+                    // Make the move
+                    const message = {
+                        message_type: 'move',
+                        move_from: selectedSquare,
+                        move_to: squareName
+                    };
+                    
+                    socket.send(JSON.stringify(message));
+                }
                 
                 // Reset selection
                 selectedSquare = null;
@@ -783,6 +797,70 @@ document.addEventListener('DOMContentLoaded', () => {
                 gameStatus.textContent = 'Game in progress';
             }
         }
+    };
+
+    // Check if a move is a pawn promotion move
+    const isPawnPromotionMove = (fromSquare, toSquare) => {
+        // Get the piece moving
+        const piece = board[fromSquare];
+        
+        // Check if the piece is a pawn (p or P)
+        if (!piece || (piece.toLowerCase() !== 'p')) return false;
+        
+        // Check if the destination square is on the opposite rank
+        const toRank = parseInt(toSquare[1]);
+        
+        // For white pawns, promotion occurs on rank 8
+        if (piece === 'P' && toRank === 8) return true;
+        
+        // For black pawns, promotion occurs on rank 1
+        if (piece === 'p' && toRank === 1) return true;
+        
+        return false;
+    };
+
+    // Show promotion dialog
+    const showPromotionDialog = (fromSquare, toSquare) => {
+        // Create dialog
+        const dialog = document.createElement('div');
+        dialog.className = 'promotion-dialog';
+        
+        // Add title
+        const title = document.createElement('h2');
+        title.textContent = 'Promote Pawn';
+        dialog.appendChild(title);
+        
+        // Add piece options
+        const pieceOptions = ['queen', 'rook', 'bishop', 'knight'];
+        pieceOptions.forEach(piece => {
+            const option = document.createElement('button');
+            option.textContent = piece.charAt(0).toUpperCase() + piece.slice(1);
+            option.dataset.piece = piece;
+            dialog.appendChild(option);
+        });
+        
+        // Add event listener for piece selection
+        dialog.addEventListener('click', (e) => {
+            if (e.target.tagName === 'BUTTON') {
+                const piece = e.target.dataset.piece;
+                
+                // Make the promotion move
+                const message = {
+                    message_type: 'move',
+                    move_from: fromSquare,
+                    move_to: toSquare,
+                    promote_to: piece
+                };
+                
+                socket.send(JSON.stringify(message));
+                
+                // Remove the dialog
+                dialog.remove();
+            }
+        });
+        
+        // Add the dialog to the page
+        document.body.appendChild(dialog);
     };
 
     // Initialize the game
