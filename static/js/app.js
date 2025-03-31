@@ -243,6 +243,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Update active color
                 activeColor = message.active_color;
                 
+                // Update game status if provided
+                if (message.game_status) {
+                    gameStatus.textContent = formatGameStatus(message.game_status);
+                    
+                    // If game has ended, stop the timers
+                    if (['white_wins', 'black_wins', 'draw'].includes(message.game_status)) {
+                        stopTimers();
+                    }
+                }
+                
                 break;
                 
             default:

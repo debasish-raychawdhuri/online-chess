@@ -537,6 +537,26 @@ impl ChessWebSocket {
         if let Some(game_state) = games.get_mut(&self.game_id) {
             let game = &mut game_state.game;
             
+            // Check if the game has already ended due to timeout or other reasons
+            if game_state.game_result.is_some() {
+                let error_msg = ServerMessage {
+                    message_type: "error".to_string(),
+                    game_id: Some(self.game_id.clone()),
+                    fen: None,
+                    color: None,
+                    error: Some("Game has already ended".to_string()),
+                    available_moves: None,
+                    last_move: None,
+                    game_status: None,
+                    white_time_ms: None,
+                    black_time_ms: None,
+                    increment_ms: None,
+                    active_color: None,
+                };
+                ctx.text(serde_json::to_string(&error_msg).unwrap());
+                return;
+            }
+            
             // Check if it's the player's turn
             let current_turn = game.side_to_move();
             let player_color = if game_state.white_player.as_ref() == Some(&self.id) {
