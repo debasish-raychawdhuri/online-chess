@@ -191,6 +191,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 clearHighlights();
                 break;
                 
+            case 'player_joined':
+                // Update game status
+                if (message.game_status) {
+                    gameStatus.textContent = formatGameStatus(message.game_status);
+                }
+                
+                // Update timer values
+                if (message.white_time_ms !== undefined) whiteTimeMs = message.white_time_ms;
+                if (message.black_time_ms !== undefined) blackTimeMs = message.black_time_ms;
+                
+                // Update timers display
+                updateTimerDisplays();
+                
+                // Start timers if we're the white player (since opponent has joined)
+                if (playerColor === 'white') {
+                    console.log('Black player joined, starting timers');
+                    startTimers();
+                }
+                break;
+                
             case 'available_moves':
                 validMoves = message.available_moves || [];
                 highlightValidMoves(validMoves);
@@ -689,12 +709,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (message.increment_ms !== undefined) incrementMs = message.increment_ms;
         
         // Update UI
-        gameStatus.textContent = message.game_status === 'waiting_for_opponent' ? 
-            'Waiting for opponent to join...' : 'Game in progress';
+        gameStatus.textContent = formatGameStatus(message.game_status || 'waiting_for_opponent');
         
-        // Update timers
+        // Update timers display but don't start them yet
         updateTimerDisplays();
-        startTimers();
+        
+        // Don't start timers until opponent joins
+        if (message.game_status === 'in_progress') {
+            startTimers();
+        } else {
+            stopTimers(); // Make sure timers are stopped
+        }
     };
 
     // Handle game joined message
@@ -705,11 +730,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (message.increment_ms !== undefined) incrementMs = message.increment_ms;
         
         // Update UI
-        gameStatus.textContent = 'Game in progress';
+        gameStatus.textContent = formatGameStatus(message.game_status || 'in_progress');
         
         // Update timers
         updateTimerDisplays();
-        startTimers();
+        
+        // Only start timers if the game is in progress (both players present)
+        if (message.game_status === 'in_progress') {
+            startTimers();
+        }
     };
 
     // Handle move made message

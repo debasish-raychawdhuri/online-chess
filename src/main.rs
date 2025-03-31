@@ -437,7 +437,15 @@ impl ChessWebSocket {
                 
                 // Get current game state
                 let fen = game_state.game.current_position().to_string();
-                let game_status = get_game_status(&game_state.game);
+                
+                // Update game status to in_progress since both players are now present
+                let game_status = "in_progress".to_string();
+                
+                // Set the last_move_time when the second player joins to start the clock
+                if game_state.black_player.is_some() && game_state.white_player.is_some() {
+                    game_state.last_move_time = Some(std::time::Instant::now());
+                    info!("Setting initial last_move_time as both players have joined");
+                }
                 
                 // Send joined message to the player
                 let joined_msg = ServerMessage {
