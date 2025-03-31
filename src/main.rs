@@ -16,9 +16,9 @@ mod models;
 // WebSocket handler for chess games
 struct ChessWebSocket {
     id: String,
+    app_state: web::Data<AppState>,
     game_id: String,
     color: Option<Color>,
-    app_state: web::Data<AppState>,
 }
 
 // Application state shared between connections
@@ -70,21 +70,57 @@ impl Actor for ChessWebSocket {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         // Register the actor with the application state
-        let id = self.id.clone();
-        self.app_state.sessions.lock().unwrap().insert(id, ctx.address());
+        let addr = ctx.address();
+        self.app_state.sessions.lock().unwrap().insert(self.id.clone(), addr);
+        
+        // Log the connection and total active sessions
+        let total_sessions = self.app_state.sessions.lock().unwrap().len();
+        info!("WebSocket connection started: {}", self.id);
+        info!("Total active sessions: {}", total_sessions);
     }
 
-    fn stopped(&mut self, _: &mut Self::Context) {
-        // Remove the actor from the application state
-        self.app_state.sessions.lock().unwrap().remove(&self.id);
-
-        // Remove from game connections if part of a game
+    fn stopping(&mut self, _: &mut Self::Context) -> Running {
+        // Remove the actor from any game it was part of
         if !self.game_id.is_empty() {
             let mut connections = self.app_state.connections.lock().unwrap();
-            if let Some(conn_list) = connections.get_mut(&self.game_id) {
-                conn_list.retain(|id| id != &self.id);
+            if let Some(connection_ids) = connections.get_mut(&self.game_id) {
+                // Remove this connection from the previous game
+                connection_ids.retain(|id| id != &self.id);
+                info!("Removed player {} from game {}'s connections", self.id, self.game_id);
+                
+                // If this was the last player, we could clean up the game state
+                if connection_ids.is_empty() {
+                    info!("No more players in game {}. Cleaning up.", self.game_id);
+                    connections.remove(&self.game_id);
+                    
+                    // Also remove the game state
+                    let mut games = self.app_state.games.lock().unwrap();
+                    games.remove(&self.game_id);
+                    info!("Removed game state for {}", self.game_id);
+                }
+            }
+            
+            // Also remove player from the game state if they were assigned a color
+            let mut games = self.app_state.games.lock().unwrap();
+            if let Some(game_state) = games.get_mut(&self.game_id) {
+                if game_state.white_player.as_ref() == Some(&self.id) {
+                    info!("Removing player {} as white from game {}", self.id, self.game_id);
+                    game_state.white_player = None;
+                }
+                if game_state.black_player.as_ref() == Some(&self.id) {
+                    info!("Removing player {} as black from game {}", self.id, self.game_id);
+                    game_state.black_player = None;
+                }
             }
         }
+        
+        // Remove the actor from the sessions
+        self.app_state.sessions.lock().unwrap().remove(&self.id);
+        let total_sessions = self.app_state.sessions.lock().unwrap().len();
+        info!("WebSocket connection closed: {}", self.id);
+        info!("Total active sessions: {}", total_sessions);
+        
+        Running::Stop
     }
 }
 
@@ -106,18 +142,27 @@ impl Handler<ChessWebSocketMessage> for ChessWebSocket {
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ChessWebSocket {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
-            Ok(ws::Message::Text(text)) => {
-                self.handle_message(text.to_string(), ctx);
-            }
             Ok(ws::Message::Ping(msg)) => {
+                info!("Received ping from {}", self.id);
                 ctx.pong(&msg);
             }
-            Ok(ws::Message::Pong(_)) => {}
-            Ok(ws::Message::Close(reason)) => {
-                ctx.close(reason);
-                ctx.stop();
+            Ok(ws::Message::Pong(_)) => {
+                info!("Received pong from {}", self.id);
             }
-            _ => {}
+            Ok(ws::Message::Text(text)) => {
+                info!("Received text message from {}: {}", self.id, text);
+                self.handle_message(text.to_string(), ctx);
+            }
+            Ok(ws::Message::Binary(bin)) => {
+                info!("Received binary message from {}: {} bytes", self.id, bin.len());
+            }
+            Ok(ws::Message::Close(reason)) => {
+                info!("Received close message from {}: {:?}", self.id, reason);
+                ctx.close(reason);
+            }
+            _ => {
+                info!("Received unknown message type from {}", self.id);
+            }
         }
     }
 }
@@ -190,7 +235,7 @@ impl ChessWebSocket {
                 }
             }
             Err(e) => {
-                warn!("Error parsing message: {}", e);
+                info!("Error parsing client message: {}", e);
                 let error_msg = ServerMessage {
                     message_type: "error".to_string(),
                     game_id: if self.game_id.is_empty() { None } else { Some(self.game_id.clone()) },
@@ -207,39 +252,92 @@ impl ChessWebSocket {
     }
 
     fn broadcast_to_game(&self, game_id: &str, message: &ServerMessage) {
-        info!("Broadcasting message to game {}", game_id);
-        let connections = self.app_state.connections.lock().unwrap();
-        let sessions = self.app_state.sessions.lock().unwrap();
+        info!("Broadcasting message to game {}: {:?}", game_id, message.message_type);
         
-        if let Some(connection_ids) = connections.get(game_id) {
-            info!("Found {} connections for game {}", connection_ids.len(), game_id);
-            let msg_str = serde_json::to_string(message).unwrap();
-            
-            for connection_id in connection_ids {
-                info!("Attempting to send to connection {}", connection_id);
-                if let Some(addr) = sessions.get(connection_id) {
-                    info!("Sending message to connection {}", connection_id);
-                    addr.do_send(ChessWebSocketMessage(msg_str.clone()));
-                } else {
-                    info!("Connection {} not found in sessions", connection_id);
-                }
+        // Get the list of connection IDs for this game and all sessions
+        let connection_ids;
+        let sessions_copy;
+        
+        // Scope the locks to minimize lock time
+        {
+            let connections = self.app_state.connections.lock().unwrap();
+            if let Some(ids) = connections.get(game_id) {
+                connection_ids = ids.clone();
+            } else {
+                info!("No connections found for game {}", game_id);
+                return;
             }
-        } else {
-            info!("No connections found for game {}", game_id);
+            
+            let sessions = self.app_state.sessions.lock().unwrap();
+            sessions_copy = sessions.clone();
+        }
+        
+        info!("Found {} connections for game {}", connection_ids.len(), game_id);
+        
+        // Serialize the message once
+        let msg_str = serde_json::to_string(message).unwrap();
+        
+        // Send the message to each connection in the game
+        for connection_id in &connection_ids {
+            // Skip sending to self if it's the same message type as what we just sent
+            if connection_id == &self.id && (message.message_type == "joined" || message.message_type == "game_created") {
+                info!("Skipping sending to self ({})", self.id);
+                continue;
+            }
+            
+            if let Some(addr) = sessions_copy.get(connection_id) {
+                info!("Sending message to player {}", connection_id);
+                addr.do_send(ChessWebSocketMessage(msg_str.clone()));
+            } else {
+                info!("Player {} not found in sessions", connection_id);
+            }
         }
     }
 
     fn handle_create(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
-        let game_id = Uuid::new_v4().to_string();
-        self.game_id = game_id.clone();
+        info!("Creating a new game for player {}", self.id);
         
-        // Assign the creator as the white player
+        // Create a new game with a unique ID
+        let game_id = Uuid::new_v4().to_string();
+        info!("Generated new game ID: {}", game_id);
+        
+        // If the user is already in a game, remove them from that game first
+        if !self.game_id.is_empty() {
+            info!("Player {} is already in game {}. Removing from that game first", self.id, self.game_id);
+            
+            // Remove from connections list
+            let mut connections = self.app_state.connections.lock().unwrap();
+            if let Some(connection_ids) = connections.get_mut(&self.game_id) {
+                connection_ids.retain(|id| id != &self.id);
+                info!("Removed player {} from game {}'s connections", self.id, self.game_id);
+            }
+            
+            // Remove from game state if assigned a color
+            let mut games = self.app_state.games.lock().unwrap();
+            if let Some(game_state) = games.get_mut(&self.game_id) {
+                if game_state.white_player.as_ref() == Some(&self.id) {
+                    info!("Removing player {} as white from game {}", self.id, self.game_id);
+                    game_state.white_player = None;
+                }
+                if game_state.black_player.as_ref() == Some(&self.id) {
+                    info!("Removing player {} as black from game {}", self.id, self.game_id);
+                    game_state.black_player = None;
+                }
+            }
+            drop(connections);
+            drop(games);
+        }
+        
+        // Update this connection's game ID and color
+        self.game_id = game_id.clone();
         self.color = Some(Color::White);
 
+        // Create a new chess game
         let mut games = self.app_state.games.lock().unwrap();
         let game = Game::new();
         let game_status = get_game_status(&game);
         
+        // Store the game state
         games.insert(
             game_id.clone(),
             GameState {
@@ -248,10 +346,17 @@ impl ChessWebSocket {
                 black_player: None,
             },
         );
+        info!("Created new game {} with player {} as white", game_id, self.id);
 
+        // Add this connection to the game's connections list
         let mut connections = self.app_state.connections.lock().unwrap();
         connections.insert(game_id.clone(), vec![self.id.clone()]);
+        info!("Added player {} to connections for game {}", self.id, game_id);
 
+        // Debug: Log all available games after creation
+        info!("Available games after creation: {:?}", games.keys().collect::<Vec<_>>());
+
+        // Send the game created message back to the client
         let msg = ServerMessage {
             message_type: "game_created".to_string(),
             game_id: Some(game_id),
@@ -263,12 +368,50 @@ impl ChessWebSocket {
             game_status: Some(game_status),
         };
 
+        info!("Sending game_created message to player {}", self.id);
         ctx.text(serde_json::to_string(&msg).unwrap());
     }
 
     fn handle_join(&mut self, msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
         if let Some(game_id) = msg.game_id {
-            info!("Player {} joining game {}", self.id, game_id);
+            info!("Player {} attempting to join game {}", self.id, game_id);
+            
+            // If the user is already in a game, remove them from that game first
+            if !self.game_id.is_empty() {
+                info!("Player {} is already in game {}. Removing from that game first", self.id, self.game_id);
+                
+                // Remove from connections list
+                let mut connections = self.app_state.connections.lock().unwrap();
+                if let Some(connection_ids) = connections.get_mut(&self.game_id) {
+                    connection_ids.retain(|id| id != &self.id);
+                    info!("Removed player {} from game {}'s connections", self.id, self.game_id);
+                }
+                
+                // Remove from game state if assigned a color
+                let mut games = self.app_state.games.lock().unwrap();
+                if let Some(game_state) = games.get_mut(&self.game_id) {
+                    if game_state.white_player.as_ref() == Some(&self.id) {
+                        info!("Removing player {} as white from game {}", self.id, self.game_id);
+                        game_state.white_player = None;
+                    }
+                    if game_state.black_player.as_ref() == Some(&self.id) {
+                        info!("Removing player {} as black from game {}", self.id, self.game_id);
+                        game_state.black_player = None;
+                    }
+                }
+                
+                // Drop locks before proceeding
+                drop(connections);
+                drop(games);
+                
+                // Clear the game ID and color from this connection
+                let old_game_id = self.game_id.clone();
+                self.game_id = String::new();
+                self.color = None;
+                info!("Reset game ID and color for player {}", self.id);
+            }
+            
+            // Check if the game exists
             let mut games = self.app_state.games.lock().unwrap();
             
             // Debug: Log all available games
@@ -277,19 +420,19 @@ impl ChessWebSocket {
             if let Some(game_state) = games.get_mut(&game_id) {
                 // Determine player color
                 let player_color = if game_state.white_player.is_none() {
-                    info!("Assigning player as white");
+                    info!("Assigning player {} as white in game {}", self.id, game_id);
                     game_state.white_player = Some(self.id.clone());
                     Color::White
                 } else if game_state.black_player.is_none() {
-                    info!("Assigning player as black");
+                    info!("Assigning player {} as black in game {}", self.id, game_id);
                     game_state.black_player = Some(self.id.clone());
                     Color::Black
                 } else {
                     // Game is full
-                    info!("Cannot join game: Game is full");
+                    info!("Cannot join game {}: Game is full", game_id);
                     let error_msg = ServerMessage {
                         message_type: "error".to_string(),
-                        game_id: Some(game_id.clone()),
+                        game_id: Some(game_id),
                         fen: None,
                         color: None,
                         error: Some("Game is full".to_string()),
@@ -300,55 +443,66 @@ impl ChessWebSocket {
                     ctx.text(serde_json::to_string(&error_msg).unwrap());
                     return;
                 };
-
-                // Add player to the connections list for this game
-                let mut connections = self.app_state.connections.lock().unwrap();
-                if let Some(conn_list) = connections.get_mut(&game_id) {
-                    conn_list.push(self.id.clone());
-                } else {
-                    connections.insert(game_id.clone(), vec![self.id.clone()]);
-                }
-
-                // Set the game ID and color for this connection
+                
+                // Update this connection's game ID and color
                 self.game_id = game_id.clone();
                 self.color = Some(player_color);
-
-                // Send game state to the player
-                let msg = ServerMessage {
+                
+                // Add player to connections list for this game
+                let mut connections = self.app_state.connections.lock().unwrap();
+                if let Some(connection_ids) = connections.get_mut(&game_id) {
+                    if !connection_ids.contains(&self.id) {
+                        connection_ids.push(self.id.clone());
+                        info!("Added player {} to game {}'s connections", self.id, game_id);
+                    }
+                } else {
+                    connections.insert(game_id.clone(), vec![self.id.clone()]);
+                    info!("Created new connections entry for game {} with player {}", game_id, self.id);
+                }
+                
+                // Get current game state
+                let fen = game_state.game.current_position().to_string();
+                let game_status = get_game_status(&game_state.game);
+                
+                // Send joined message to the player
+                let joined_msg = ServerMessage {
                     message_type: "joined".to_string(),
                     game_id: Some(game_id.clone()),
-                    fen: Some(game_state.game.current_position().to_string()),
+                    fen: Some(fen.clone()),
                     color: Some(color_to_string(player_color)),
                     error: None,
                     available_moves: None,
                     last_move: None,
-                    game_status: Some(get_game_status(&game_state.game)),
+                    game_status: Some(game_status.clone()),
                 };
-                info!("Sending joined message to player: {:?}", msg);
                 
-                // Send the message directly to the client
-                let msg_str = serde_json::to_string(&msg).unwrap();
-                ctx.text(msg_str);
+                info!("Sending joined message to player {}", self.id);
+                ctx.text(serde_json::to_string(&joined_msg).unwrap());
                 
-                // Notify other players
-                let update_msg = ServerMessage {
+                // Notify other players that someone joined
+                let player_joined_msg = ServerMessage {
                     message_type: "player_joined".to_string(),
                     game_id: Some(game_id.clone()),
-                    fen: Some(game_state.game.current_position().to_string()),
-                    color: None,
+                    fen: Some(fen),
+                    color: Some(color_to_string(player_color)),
                     error: None,
                     available_moves: None,
                     last_move: None,
-                    game_status: Some(get_game_status(&game_state.game)),
+                    game_status: Some(game_status),
                 };
-                info!("Broadcasting player_joined message to all players");
-                drop(games); // Release the lock before broadcasting
-                self.broadcast_to_game(&self.game_id, &update_msg);
+                
+                // Drop the locks before broadcasting
+                drop(games);
+                drop(connections);
+                
+                info!("Broadcasting player_joined message for game {}", game_id);
+                self.broadcast_to_game(&game_id, &player_joined_msg);
             } else {
-                info!("Cannot join game: Game not found with ID {}", game_id);
+                // Game not found
+                info!("Game {} not found", game_id);
                 let error_msg = ServerMessage {
                     message_type: "error".to_string(),
-                    game_id: Some(game_id.clone()),
+                    game_id: Some(game_id),
                     fen: None,
                     color: None,
                     error: Some("Game not found".to_string()),
@@ -359,13 +513,14 @@ impl ChessWebSocket {
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
             }
         } else {
-            info!("Cannot join game: No game ID provided");
+            // No game ID provided
+            info!("Join request missing game ID");
             let error_msg = ServerMessage {
                 message_type: "error".to_string(),
                 game_id: None,
                 fen: None,
                 color: None,
-                error: Some("No game ID provided".to_string()),
+                error: Some("Game ID is required to join a game".to_string()),
                 available_moves: None,
                 last_move: None,
                 game_status: None,
@@ -558,16 +713,21 @@ impl ChessWebSocket {
 
 // WebSocket connection handler
 async fn ws_index(req: HttpRequest, stream: web::Payload, app_state: web::Data<AppState>) -> Result<HttpResponse, Error> {
-    let id = Uuid::new_v4().to_string();
-    info!("New WebSocket connection: {}", id);
+    info!("New WebSocket connection request");
     
+    // Create a unique ID for this connection
+    let id = Uuid::new_v4().to_string();
+    info!("Generated WebSocket ID: {}", id);
+    
+    // Initialize the WebSocket actor
     let ws = ChessWebSocket {
-        id,
+        id: id.clone(),
+        app_state: app_state.clone(),
         game_id: String::new(),
         color: None,
-        app_state: app_state.clone(),
     };
     
+    // Start the WebSocket actor
     ws::start(ws, &req, stream)
 }
 
