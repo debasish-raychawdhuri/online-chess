@@ -151,6 +151,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     const chess = new Chess();
                     const position = chess.parseFen(message.fen);
                     updateBoard(position, true);
+                    
+                    // Update active color based on the FEN (which indicates whose turn it is)
+                    // In FEN, if the active color is 'w', it's White's turn, otherwise Black's turn
+                    activeColor = position.activeColor === 'w' ? 'white' : 'black';
+                    console.log('FEN:', message.fen);
+                    console.log('Parsed position:', position);
+                    console.log('Active color set to:', activeColor);
+                    
+                    // Reset the timer for the new active player
+                    lastMoveTime = Date.now();
                 }
                 
                 // Update game status if provided
@@ -163,6 +173,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     const { from, to } = message.last_move;
                     highlightLastMove(from, to);
                 }
+                
+                // Update timer values
+                if (message.white_time_ms !== undefined) whiteTimeMs = message.white_time_ms;
+                if (message.black_time_ms !== undefined) blackTimeMs = message.black_time_ms;
+                
+                // Update timers
+                updateTimerDisplays();
+                
+                // Restart the timers to ensure they're running with the correct active player
+                stopTimers();
+                startTimers();
                 
                 // Clear selection and valid moves
                 selectedSquare = null;
@@ -624,6 +645,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         lastMoveTime = Date.now();
+        console.log('Starting timers with active color:', activeColor);
         
         timerInterval = setInterval(() => {
             const now = Date.now();
@@ -632,8 +654,10 @@ document.addEventListener('DOMContentLoaded', () => {
             // Only update the active player's timer
             if (activeColor === 'white') {
                 whiteTimeMs = Math.max(0, whiteTimeMs - 100);
+                console.log('White time updated:', whiteTimeMs);
             } else {
                 blackTimeMs = Math.max(0, blackTimeMs - 100);
+                console.log('Black time updated:', blackTimeMs);
             }
             
             updateTimerDisplays();

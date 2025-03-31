@@ -638,6 +638,9 @@ impl ChessWebSocket {
                     game_state.last_move_time = Some(now);
                     game_state.active_player = Some(game.side_to_move());
                     
+                    // Log the active player for debugging
+                    info!("Active player after move: {:?}", game_state.active_player);
+                    
                     // Create the last move info
                     let last_move = LastMove {
                         from,
