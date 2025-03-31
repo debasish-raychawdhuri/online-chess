@@ -10,16 +10,26 @@ document.addEventListener('DOMContentLoaded', () => {
     const gameStatus = document.getElementById('game-status');
     const connectionStatus = document.getElementById('connection-status');
     const chessboard = document.getElementById('chessboard');
+    const startTimeSelect = document.getElementById('start-time');
+    const incrementSelect = document.getElementById('increment');
+    const whiteTimeDisplay = document.getElementById('white-time');
+    const blackTimeDisplay = document.getElementById('black-time');
 
     // Game state
     let socket;
     let isConnected = false;
     let gameId = '';
     let playerColor = '';
-    let selectedSquare = null;
     let isMyTurn = false;
+    let selectedSquare = null;
     let board = {};
     let validMoves = [];
+    let timerInterval = null;
+    let whiteTimeMs = 900000; // 15 minutes in milliseconds
+    let blackTimeMs = 900000; // 15 minutes in milliseconds
+    let incrementMs = 10000; // 10 seconds in milliseconds
+    let lastMoveTime = null;
+    let activeColor = 'white';
 
     // Initialize WebSocket connection
     const connectWebSocket = () => {
@@ -35,6 +45,8 @@ document.addEventListener('DOMContentLoaded', () => {
             createGameBtn.disabled = false;
             joinGameBtn.disabled = false;
             gameIdInput.disabled = false;
+            startTimeSelect.disabled = false;
+            incrementSelect.disabled = false;
             connectionStatus.textContent = 'Connected';
             connectionStatus.style.color = 'green';
             gameStatus.textContent = 'Connected to server. Create a new game or join an existing one.';
@@ -46,6 +58,8 @@ document.addEventListener('DOMContentLoaded', () => {
             createGameBtn.disabled = true;
             joinGameBtn.disabled = true;
             gameIdInput.disabled = true;
+            startTimeSelect.disabled = true;
+            incrementSelect.disabled = true;
             connectionStatus.textContent = 'Disconnected';
             connectionStatus.style.color = 'red';
             gameStatus.textContent = 'Connection lost. Please refresh the page.';
@@ -77,8 +91,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 gameIdDisplay.textContent = `Game ID: ${gameId}`;
                 playerColorDisplay.textContent = `You are playing as: ${playerColor}`;
                 playerInfo.style.display = 'flex';
-                gameStatus.textContent = `Game created. Waiting for opponent to join. Share the Game ID: ${gameId}`;
-                updateBoard(message.fen, true);
+                gameStatus.textContent = formatGameStatus(message.game_status || 'waiting_for_opponent');
+                
+                // Parse FEN and update board
+                if (message.fen) {
+                    const chess = new Chess();
+                    const position = chess.parseFen(message.fen);
+                    updateBoard(position, true);
+                }
+                
+                handleGameCreated(message);
                 break;
                 
             case 'joined':
@@ -87,39 +109,114 @@ document.addEventListener('DOMContentLoaded', () => {
                 gameIdDisplay.textContent = `Game ID: ${gameId}`;
                 playerColorDisplay.textContent = `You are playing as: ${playerColor}`;
                 playerInfo.style.display = 'flex';
-                gameStatus.textContent = `You joined the game as ${playerColor}`;
-                updateBoard(message.fen, true);
+                gameStatus.textContent = formatGameStatus(message.game_status || 'in_progress');
+                
+                // Parse FEN and update board
+                if (message.fen) {
+                    const chess = new Chess();
+                    const position = chess.parseFen(message.fen);
+                    updateBoard(position, true);
+                }
+                
                 break;
                 
-            case 'player_joined':
-                gameStatus.textContent = 'Opponent joined the game. Game is starting!';
-                updateBoard(message.fen, true);
+            case 'game_update':
+                // Parse FEN and update board
+                if (message.fen) {
+                    const chess = new Chess();
+                    const position = chess.parseFen(message.fen);
+                    updateBoard(position, true);
+                }
+                
+                // Update game status if provided
+                if (message.game_status) {
+                    gameStatus.textContent = formatGameStatus(message.game_status);
+                }
+                
+                // Update last move if provided
+                if (message.last_move) {
+                    const { from, to } = message.last_move;
+                    highlightLastMove(from, to);
+                }
+                
+                // Clear selection and valid moves
+                selectedSquare = null;
+                validMoves = [];
+                clearHighlights();
                 break;
                 
             case 'move_made':
-                updateBoard(message.fen, true);
-                if (message.last_move) {
-                    highlightLastMove(message.last_move);
+                // Parse FEN and update board
+                if (message.fen) {
+                    const chess = new Chess();
+                    const position = chess.parseFen(message.fen);
+                    updateBoard(position, true);
                 }
+                
+                // Update game status if provided
                 if (message.game_status) {
-                    updateGameStatus(message.game_status);
+                    gameStatus.textContent = formatGameStatus(message.game_status);
                 }
+                
+                // Update last move if provided
+                if (message.last_move) {
+                    const { from, to } = message.last_move;
+                    highlightLastMove(from, to);
+                }
+                
+                // Clear selection and valid moves
+                selectedSquare = null;
+                validMoves = [];
+                clearHighlights();
                 break;
                 
             case 'available_moves':
-                if (message.available_moves && message.available_moves.length > 0) {
-                    validMoves = message.available_moves;
-                    highlightValidMoves(validMoves);
-                }
+                validMoves = message.available_moves || [];
+                highlightValidMoves(validMoves);
                 break;
                 
             case 'error':
-                console.error('Error from server:', message.error);
-                gameStatus.textContent = `Error: ${message.error}`;
+                console.log('Error from server:', message.error);
+                if (message.error) {
+                    // Show error message to the user
+                    const errorToast = document.createElement('div');
+                    errorToast.className = 'error-toast';
+                    errorToast.textContent = message.error;
+                    document.body.appendChild(errorToast);
+                    
+                    // Remove the error toast after 3 seconds
+                    setTimeout(() => {
+                        errorToast.remove();
+                    }, 3000);
+                }
                 break;
                 
             default:
                 console.log('Unknown message type:', message.message_type);
+        }
+    };
+
+    // Format game status for display
+    const formatGameStatus = (status) => {
+        switch (status) {
+            case 'white_turn':
+                return 'White\'s turn';
+            case 'black_turn':
+                return 'Black\'s turn';
+            case 'white_wins':
+                return 'White wins!';
+            case 'black_wins':
+                return 'Black wins!';
+            case 'draw':
+                return 'Game ended in a draw';
+            case 'check':
+                return 'Check!';
+            case 'waiting_for_opponent':
+                return 'Waiting for opponent to join...';
+            case 'in_progress':
+                return 'Game in progress';
+            default:
+                return status;
         }
     };
 
@@ -130,8 +227,13 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
+        const startTimeMinutes = parseInt(startTimeSelect.value, 10);
+        const incrementSeconds = parseInt(incrementSelect.value, 10);
+        
         const message = {
-            action: 'create'
+            action: 'create',
+            start_time_minutes: startTimeMinutes,
+            increment_seconds: incrementSeconds
         };
         
         socket.send(JSON.stringify(message));
@@ -175,25 +277,64 @@ document.addEventListener('DOMContentLoaded', () => {
                 const square = document.createElement('div');
                 square.className = `square ${chess.getSquareColor(squareName)}`;
                 square.dataset.square = squareName;
+                
+                // Add click event
                 square.addEventListener('click', () => handleSquareClick(squareName));
+                
+                // Add drag-and-drop events
+                square.addEventListener('dragover', (e) => {
+                    // Allow dropping
+                    e.preventDefault();
+                    
+                    // Highlight if it's a valid move
+                    if (validMoves.includes(squareName)) {
+                        square.classList.add('drag-over');
+                    }
+                });
+                
+                square.addEventListener('dragleave', () => {
+                    square.classList.remove('drag-over');
+                });
+                
+                square.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    square.classList.remove('drag-over');
+                    
+                    // Get the square that was dragged from
+                    const fromSquare = e.dataTransfer.getData('text/plain');
+                    
+                    // Check if this is a valid move
+                    if (validMoves.includes(squareName)) {
+                        // Make the move
+                        const message = {
+                            action: 'move',
+                            move_from: fromSquare,
+                            move_to: squareName
+                        };
+                        
+                        socket.send(JSON.stringify(message));
+                        
+                        // Reset selection
+                        selectedSquare = null;
+                        validMoves = [];
+                        clearHighlights();
+                    }
+                });
+                
                 chessboard.appendChild(square);
             }
         }
     };
 
     // Update the board based on FEN string
-    const updateBoard = (fen, checkTurn = false) => {
-        if (!fen) return;
+    const updateBoard = (position, checkTurn = true) => {
+        if (!position) return;
         
-        // Create chess utility
-        const chess = new Chess();
-        
-        // Parse the FEN string
-        const position = chess.parseFen(fen);
+        // Update the board object
         board = position.board;
         
-        // Update the turn status
         if (checkTurn) {
+            // Update turn status
             isMyTurn = (position.activeColor === 'w' && playerColor === 'white') || 
                       (position.activeColor === 'b' && playerColor === 'black');
             
@@ -230,12 +371,56 @@ document.addEventListener('DOMContentLoaded', () => {
                     pieceElement.classList.add('flipped');
                 }
                 pieceElement.innerHTML = chessPieces[piece];
+                pieceElement.dataset.square = square;
+                pieceElement.dataset.piece = piece;
+                
+                // Add drag-and-drop functionality
+                pieceElement.draggable = true;
+                
+                // Drag start event
+                pieceElement.addEventListener('dragstart', (e) => {
+                    // Only allow dragging if it's the player's turn and piece
+                    if (!isMyTurn) {
+                        e.preventDefault();
+                        return false;
+                    }
+                    
+                    const chess = new Chess();
+                    const pieceColor = chess.getPieceColor(piece);
+                    
+                    // Compare with playerColor directly since both are now 'white' or 'black'
+                    if (pieceColor !== playerColor) {
+                        e.preventDefault();
+                        return false;
+                    }
+                    
+                    // Set drag data and styling
+                    e.dataTransfer.setData('text/plain', square);
+                    setTimeout(() => {
+                        pieceElement.classList.add('dragging');
+                    }, 0);
+                    
+                    // Select the square and get valid moves
+                    selectedSquare = square;
+                    highlightSquare(square);
+                    
+                    // Request valid moves from the server
+                    const message = {
+                        action: 'get_moves',
+                        move_from: square
+                    };
+                    
+                    socket.send(JSON.stringify(message));
+                });
+                
+                // Drag end event
+                pieceElement.addEventListener('dragend', () => {
+                    pieceElement.classList.remove('dragging');
+                });
+                
                 squareElement.appendChild(pieceElement);
             }
         }
-        
-        // Clear highlights
-        clearHighlights();
     };
 
     // Handle square click
@@ -258,7 +443,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             
+            // Get piece color (now returns 'white' or 'black' to match playerColor)
             const pieceColor = chess.getPieceColor(piece);
+            
+            console.log('Piece color check:', { piece, pieceColor, playerColor });
+            
             if (pieceColor !== playerColor) {
                 console.log('Not your piece');
                 return;
@@ -299,6 +488,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 // Check if the new square has a piece of the player's color
                 const piece = board[squareName];
+                
                 if (piece && chess.getPieceColor(piece) === playerColor) {
                     // Select the new square
                     selectedSquare = squareName;
@@ -312,6 +502,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     };
                     
                     socket.send(JSON.stringify(message));
+                } else if (validMoves.length > 0) {
+                    // If the player clicked on an invalid move target, clear the selection
+                    selectedSquare = null;
+                    validMoves = [];
+                    clearHighlights();
                 }
             }
         }
@@ -349,9 +544,9 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // Highlight the last move
-    const highlightLastMove = (move) => {
-        const fromSquare = document.querySelector(`.square[data-square="${move.from}"]`);
-        const toSquare = document.querySelector(`.square[data-square="${move.to}"]`);
+    const highlightLastMove = (from, to) => {
+        const fromSquare = document.querySelector(`.square[data-square="${from}"]`);
+        const toSquare = document.querySelector(`.square[data-square="${to}"]`);
         
         if (fromSquare) fromSquare.classList.add('last-move');
         if (toSquare) toSquare.classList.add('last-move');
@@ -397,6 +592,134 @@ document.addEventListener('DOMContentLoaded', () => {
                 
             default:
                 gameStatus.textContent = `Game status: ${status}`;
+        }
+    };
+
+    // Format time in mm:ss format
+    const formatTime = (timeMs) => {
+        const totalSeconds = Math.max(0, Math.floor(timeMs / 1000));
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    };
+
+    // Update timer displays
+    const updateTimerDisplays = () => {
+        whiteTimeDisplay.textContent = formatTime(whiteTimeMs);
+        blackTimeDisplay.textContent = formatTime(blackTimeMs);
+        
+        // Update active timer styling
+        document.querySelector('.white-timer').classList.toggle('active-timer', activeColor === 'white');
+        document.querySelector('.black-timer').classList.toggle('active-timer', activeColor === 'black');
+        
+        // Add low time warning (less than 30 seconds)
+        document.querySelector('.white-timer').classList.toggle('low-time', whiteTimeMs < 30000);
+        document.querySelector('.black-timer').classList.toggle('low-time', blackTimeMs < 30000);
+    };
+
+    // Start the timers
+    const startTimers = () => {
+        if (timerInterval) {
+            clearInterval(timerInterval);
+        }
+        
+        lastMoveTime = Date.now();
+        
+        timerInterval = setInterval(() => {
+            const now = Date.now();
+            const elapsed = now - lastMoveTime;
+            
+            // Only update the active player's timer
+            if (activeColor === 'white') {
+                whiteTimeMs = Math.max(0, whiteTimeMs - 100);
+            } else {
+                blackTimeMs = Math.max(0, blackTimeMs - 100);
+            }
+            
+            updateTimerDisplays();
+            
+            // Check for time out
+            if (whiteTimeMs <= 0) {
+                gameStatus.textContent = 'White lost on time! Black wins!';
+                stopTimers();
+            } else if (blackTimeMs <= 0) {
+                gameStatus.textContent = 'Black lost on time! White wins!';
+                stopTimers();
+            }
+        }, 100);
+    };
+
+    // Stop the timers
+    const stopTimers = () => {
+        if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+        }
+    };
+
+    // Handle game created message
+    const handleGameCreated = (message) => {
+        // Update timer values
+        if (message.white_time_ms !== undefined) whiteTimeMs = message.white_time_ms;
+        if (message.black_time_ms !== undefined) blackTimeMs = message.black_time_ms;
+        if (message.increment_ms !== undefined) incrementMs = message.increment_ms;
+        
+        // Update UI
+        gameStatus.textContent = message.game_status === 'waiting_for_opponent' ? 
+            'Waiting for opponent to join...' : 'Game in progress';
+        
+        // Update timers
+        updateTimerDisplays();
+        startTimers();
+    };
+
+    // Handle game joined message
+    const handleGameJoined = (message) => {
+        // Update timer values
+        if (message.white_time_ms !== undefined) whiteTimeMs = message.white_time_ms;
+        if (message.black_time_ms !== undefined) blackTimeMs = message.black_time_ms;
+        if (message.increment_ms !== undefined) incrementMs = message.increment_ms;
+        
+        // Update UI
+        gameStatus.textContent = 'Game in progress';
+        
+        // Update timers
+        updateTimerDisplays();
+        startTimers();
+    };
+
+    // Handle move made message
+    const handleMoveMade = (message) => {
+        // Update timer values
+        if (message.white_time_ms !== undefined) whiteTimeMs = message.white_time_ms;
+        if (message.black_time_ms !== undefined) blackTimeMs = message.black_time_ms;
+        
+        // Update timers
+        updateTimerDisplays();
+        
+        // Highlight the last move
+        if (message.last_move) {
+            const { from, to } = message.last_move;
+            highlightLastMove(from, to);
+        }
+        
+        // Update game status if provided
+        if (message.game_status) {
+            if (message.game_status === 'checkmate') {
+                const winner = activeColor === 'white' ? 'Black' : 'White';
+                gameStatus.textContent = `Checkmate! ${winner} wins!`;
+                stopTimers();
+            } else if (message.game_status === 'stalemate') {
+                gameStatus.textContent = 'Stalemate! Game is a draw.';
+                stopTimers();
+            } else if (message.game_status === 'draw') {
+                gameStatus.textContent = 'Draw! Game is over.';
+                stopTimers();
+            } else if (message.game_status === 'check') {
+                gameStatus.textContent = `${activeColor === 'white' ? 'White' : 'Black'} is in check!`;
+            } else {
+                gameStatus.textContent = 'Game in progress';
+            }
         }
     };
 

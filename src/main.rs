@@ -33,6 +33,11 @@ struct GameState {
     game: Game,
     white_player: Option<String>,
     black_player: Option<String>,
+    white_time_ms: u64,
+    black_time_ms: u64,
+    increment_ms: u64,
+    last_move_time: Option<std::time::Instant>,
+    active_player: Option<Color>,
 }
 
 // Message sent from client to server
@@ -43,6 +48,8 @@ struct ClientMessage {
     move_from: Option<String>,
     move_to: Option<String>,
     color_preference: Option<String>,
+    start_time_minutes: Option<u64>,
+    increment_seconds: Option<u64>,
 }
 
 // Message sent from server to client
@@ -56,6 +63,9 @@ struct ServerMessage {
     available_moves: Option<Vec<String>>,
     last_move: Option<LastMove>,
     game_status: Option<String>,
+    white_time_ms: Option<u64>,
+    black_time_ms: Option<u64>,
+    increment_ms: Option<u64>,
 }
 
 // Last move information
@@ -176,7 +186,7 @@ impl ChessWebSocket {
                 match client_msg.action.as_str() {
                     "create" => {
                         info!("Processing create action");
-                        self.handle_create(ctx);
+                        self.handle_create(client_msg, ctx);
                     }
                     "join" => {
                         info!("Processing join action with game_id: {:?}", client_msg.game_id);
@@ -184,39 +194,11 @@ impl ChessWebSocket {
                     }
                     "move" => {
                         info!("Move action received: from: {:?}, to: {:?}", client_msg.move_from, client_msg.move_to);
-                        if let (Some(from), Some(to)) = (client_msg.move_from.clone(), client_msg.move_to.clone()) {
-                            self.handle_move(from, to, ctx);
-                        } else {
-                            info!("Move action missing from or to");
-                            let error_msg = ServerMessage {
-                                message_type: "error".to_string(),
-                                game_id: if self.game_id.is_empty() { None } else { Some(self.game_id.clone()) },
-                                fen: None,
-                                color: None,
-                                error: Some("Move requires from and to positions".to_string()),
-                                available_moves: None,
-                                last_move: None,
-                                game_status: None,
-                            };
-                            ctx.text(serde_json::to_string(&error_msg).unwrap());
-                        }
+                        self.handle_move(client_msg, ctx);
                     }
                     "get_moves" => {
-                        if let Some(from) = client_msg.move_from {
-                            self.handle_get_moves(from, ctx);
-                        } else {
-                            let error_msg = ServerMessage {
-                                message_type: "error".to_string(),
-                                game_id: Some(self.game_id.clone()),
-                                fen: None,
-                                color: None,
-                                error: Some("Get moves requires from position".to_string()),
-                                available_moves: None,
-                                last_move: None,
-                                game_status: None,
-                            };
-                            ctx.text(serde_json::to_string(&error_msg).unwrap());
-                        }
+                        info!("Get moves action received: from: {:?}", client_msg.move_from);
+                        self.handle_get_moves(client_msg, ctx);
                     }
                     _ => {
                         info!("Unknown action: {}", client_msg.action);
@@ -229,6 +211,9 @@ impl ChessWebSocket {
                             available_moves: None,
                             last_move: None,
                             game_status: None,
+                            white_time_ms: None,
+                            black_time_ms: None,
+                            increment_ms: None,
                         };
                         ctx.text(serde_json::to_string(&error_msg).unwrap());
                     }
@@ -245,6 +230,9 @@ impl ChessWebSocket {
                     available_moves: None,
                     last_move: None,
                     game_status: None,
+                    white_time_ms: None,
+                    black_time_ms: None,
+                    increment_ms: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
             }
@@ -294,80 +282,62 @@ impl ChessWebSocket {
         }
     }
 
-    fn handle_create(&mut self, ctx: &mut ws::WebsocketContext<Self>) {
+    fn handle_create(&mut self, msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
         info!("Creating a new game for player {}", self.id);
         
         // Create a new game with a unique ID
         let game_id = Uuid::new_v4().to_string();
-        info!("Generated new game ID: {}", game_id);
-        
-        // If the user is already in a game, remove them from that game first
-        if !self.game_id.is_empty() {
-            info!("Player {} is already in game {}. Removing from that game first", self.id, self.game_id);
-            
-            // Remove from connections list
-            let mut connections = self.app_state.connections.lock().unwrap();
-            if let Some(connection_ids) = connections.get_mut(&self.game_id) {
-                connection_ids.retain(|id| id != &self.id);
-                info!("Removed player {} from game {}'s connections", self.id, self.game_id);
-            }
-            
-            // Remove from game state if assigned a color
-            let mut games = self.app_state.games.lock().unwrap();
-            if let Some(game_state) = games.get_mut(&self.game_id) {
-                if game_state.white_player.as_ref() == Some(&self.id) {
-                    info!("Removing player {} as white from game {}", self.id, self.game_id);
-                    game_state.white_player = None;
-                }
-                if game_state.black_player.as_ref() == Some(&self.id) {
-                    info!("Removing player {} as black from game {}", self.id, self.game_id);
-                    game_state.black_player = None;
-                }
-            }
-            drop(connections);
-            drop(games);
-        }
-        
-        // Update this connection's game ID and color
         self.game_id = game_id.clone();
-        self.color = Some(Color::White);
-
-        // Create a new chess game
-        let mut games = self.app_state.games.lock().unwrap();
-        let game = Game::new();
-        let game_status = get_game_status(&game);
         
-        // Store the game state
+        // Set the player's color to white
+        self.color = Some(Color::White);
+        
+        // Add the player to the connections list for this game
+        let mut connections = self.app_state.connections.lock().unwrap();
+        connections.entry(game_id.clone()).or_insert_with(Vec::new).push(self.id.clone());
+        
+        // Create the game state
+        let mut games = self.app_state.games.lock().unwrap();
         games.insert(
             game_id.clone(),
             GameState {
-                game,
+                game: Game::new(),
                 white_player: Some(self.id.clone()),
                 black_player: None,
+                white_time_ms: 15 * 60 * 1000,
+                black_time_ms: 15 * 60 * 1000,
+                increment_ms: 10 * 1000,
+                last_move_time: None,
+                active_player: Some(Color::White),
             },
         );
         info!("Created new game {} with player {} as white", game_id, self.id);
-
-        // Add this connection to the game's connections list
-        let mut connections = self.app_state.connections.lock().unwrap();
-        connections.insert(game_id.clone(), vec![self.id.clone()]);
-        info!("Added player {} to connections for game {}", self.id, game_id);
-
-        // Debug: Log all available games after creation
-        info!("Available games after creation: {:?}", games.keys().collect::<Vec<_>>());
-
-        // Send the game created message back to the client
+        
+        // Determine the game status
+        let game_status = if games.get(&game_id).unwrap().black_player.is_none() {
+            "waiting_for_opponent"
+        } else {
+            "in_progress"
+        };
+        
+        // Get the FEN string from the game
+        let fen = games.get(&game_id).unwrap().game.current_position().to_string();
+        
+        // Send a message to the client with the game information
         let msg = ServerMessage {
             message_type: "game_created".to_string(),
-            game_id: Some(game_id),
-            fen: Some(games.get(&self.game_id).unwrap().game.current_position().to_string()),
+            game_id: Some(game_id.clone()),
+            fen: Some(fen),
             color: Some("white".to_string()),
             error: None,
             available_moves: None,
             last_move: None,
-            game_status: Some(game_status),
+            game_status: Some(game_status.to_string()),
+            white_time_ms: Some(15 * 60 * 1000),
+            black_time_ms: Some(15 * 60 * 1000),
+            increment_ms: Some(10 * 1000),
         };
-
+        
         info!("Sending game_created message to player {}", self.id);
         ctx.text(serde_json::to_string(&msg).unwrap());
     }
@@ -383,6 +353,7 @@ impl ChessWebSocket {
                 // Remove from connections list
                 let mut connections = self.app_state.connections.lock().unwrap();
                 if let Some(connection_ids) = connections.get_mut(&self.game_id) {
+                    // Remove this connection from the previous game
                     connection_ids.retain(|id| id != &self.id);
                     info!("Removed player {} from game {}'s connections", self.id, self.game_id);
                 }
@@ -439,6 +410,9 @@ impl ChessWebSocket {
                         available_moves: None,
                         last_move: None,
                         game_status: None,
+                        white_time_ms: None,
+                        black_time_ms: None,
+                        increment_ms: None,
                     };
                     ctx.text(serde_json::to_string(&error_msg).unwrap());
                     return;
@@ -447,6 +421,7 @@ impl ChessWebSocket {
                 // Update this connection's game ID and color
                 self.game_id = game_id.clone();
                 self.color = Some(player_color);
+                info!("Set player {} color to {:?} in game {}", self.id, player_color, game_id);
                 
                 // Add player to connections list for this game
                 let mut connections = self.app_state.connections.lock().unwrap();
@@ -474,6 +449,9 @@ impl ChessWebSocket {
                     available_moves: None,
                     last_move: None,
                     game_status: Some(game_status.clone()),
+                    white_time_ms: Some(game_state.white_time_ms),
+                    black_time_ms: Some(game_state.black_time_ms),
+                    increment_ms: Some(game_state.increment_ms),
                 };
                 
                 info!("Sending joined message to player {}", self.id);
@@ -489,6 +467,9 @@ impl ChessWebSocket {
                     available_moves: None,
                     last_move: None,
                     game_status: Some(game_status),
+                    white_time_ms: Some(game_state.white_time_ms),
+                    black_time_ms: Some(game_state.black_time_ms),
+                    increment_ms: Some(game_state.increment_ms),
                 };
                 
                 // Drop the locks before broadcasting
@@ -509,6 +490,9 @@ impl ChessWebSocket {
                     available_moves: None,
                     last_move: None,
                     game_status: None,
+                    white_time_ms: None,
+                    black_time_ms: None,
+                    increment_ms: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
             }
@@ -524,85 +508,191 @@ impl ChessWebSocket {
                 available_moves: None,
                 last_move: None,
                 game_status: None,
+                white_time_ms: None,
+                black_time_ms: None,
+                increment_ms: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
         }
     }
 
-    fn handle_move(&mut self, from: String, to: String, ctx: &mut ws::WebsocketContext<Self>) {
+    fn handle_move(&mut self, msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
+        info!("Processing move from player {}", self.id);
+        
         if self.game_id.is_empty() {
             let error_msg = ServerMessage {
                 message_type: "error".to_string(),
                 game_id: None,
                 fen: None,
                 color: None,
-                error: Some("Not in a game".to_string()),
+                error: Some("You are not in a game".to_string()),
                 available_moves: None,
                 last_move: None,
                 game_status: None,
+                white_time_ms: None,
+                black_time_ms: None,
+                increment_ms: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
             return;
         }
-
+        
+        let from = msg.move_from.as_ref().unwrap_or(&"".to_string()).to_string();
+        let to = msg.move_to.as_ref().unwrap_or(&"".to_string()).to_string();
+        
+        if from.is_empty() || to.is_empty() {
+            let error_msg = ServerMessage {
+                message_type: "error".to_string(),
+                game_id: Some(self.game_id.clone()),
+                fen: None,
+                color: None,
+                error: Some("Invalid move format".to_string()),
+                available_moves: None,
+                last_move: None,
+                game_status: None,
+                white_time_ms: None,
+                black_time_ms: None,
+                increment_ms: None,
+            };
+            ctx.text(serde_json::to_string(&error_msg).unwrap());
+            return;
+        }
+        
         let mut games = self.app_state.games.lock().unwrap();
+        
         if let Some(game_state) = games.get_mut(&self.game_id) {
-            // Check if it's this player's turn
-            let current_turn = game_state.game.side_to_move();
-            if self.color != Some(current_turn) {
+            let game = &mut game_state.game;
+            
+            // Check if it's the player's turn
+            let current_turn = game.side_to_move();
+            let player_color = if game_state.white_player.as_ref() == Some(&self.id) {
+                Some(Color::White)
+            } else if game_state.black_player.as_ref() == Some(&self.id) {
+                Some(Color::Black)
+            } else {
+                None
+            };
+            
+            if player_color != Some(current_turn) {
                 let error_msg = ServerMessage {
                     message_type: "error".to_string(),
                     game_id: Some(self.game_id.clone()),
                     fen: None,
                     color: None,
-                    error: Some("Not your turn".to_string()),
+                    error: Some("It's not your turn".to_string()),
                     available_moves: None,
                     last_move: None,
                     game_status: None,
+                    white_time_ms: None,
+                    black_time_ms: None,
+                    increment_ms: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
                 return;
             }
-
+            
             // Parse the move
-            let from_square = Square::from_str(&from.to_lowercase()).unwrap();
-            let to_square = Square::from_str(&to.to_lowercase()).unwrap();
-
-            // Create the chess move (handling promotion to queen by default)
-            let chess_move = ChessMove::new(from_square, to_square, None);
-
-            // Try to apply the move
-            if game_state.game.make_move(chess_move) {
-                // Move was successful
-                let game_status = get_game_status(&game_state.game);
-                let last_move = LastMove {
-                    from,
-                    to,
-                };
-
-                let msg = ServerMessage {
-                    message_type: "move_made".to_string(),
-                    game_id: Some(self.game_id.clone()),
-                    fen: Some(game_state.game.current_position().to_string()),
-                    color: None,
-                    error: None,
-                    available_moves: None,
-                    last_move: Some(last_move),
-                    game_status: Some(game_status),
-                };
-
-                self.broadcast_to_game(&self.game_id, &msg);
+            let from_square = Square::from_str(&from).unwrap();
+            let to_square = Square::from_str(&to).unwrap();
+            
+            // Check if the piece belongs to the player
+            if let Some(_piece) = game.current_position().piece_on(from_square) {
+                // Try to make the move
+                let chess_move = ChessMove::new(from_square, to_square, None);
+                
+                if game.make_move(chess_move) {
+                    // Update timers
+                    let now = std::time::Instant::now();
+                    
+                    // If this is not the first move, update the time for the player who just moved
+                    if let Some(last_move_time) = game_state.last_move_time {
+                        let elapsed = now.duration_since(last_move_time).as_millis() as u64;
+                        
+                        // Update the time for the player who just moved
+                        match player_color {
+                            Some(Color::White) => {
+                                if game_state.white_time_ms > elapsed {
+                                    game_state.white_time_ms -= elapsed;
+                                    // Add increment after the move
+                                    game_state.white_time_ms += game_state.increment_ms;
+                                } else {
+                                    game_state.white_time_ms = 0;
+                                    // Player lost on time
+                                }
+                            },
+                            Some(Color::Black) => {
+                                if game_state.black_time_ms > elapsed {
+                                    game_state.black_time_ms -= elapsed;
+                                    // Add increment after the move
+                                    game_state.black_time_ms += game_state.increment_ms;
+                                } else {
+                                    game_state.black_time_ms = 0;
+                                    // Player lost on time
+                                }
+                            },
+                            None => {}
+                        }
+                    }
+                    
+                    // Update the last move time and active player
+                    game_state.last_move_time = Some(now);
+                    game_state.active_player = Some(game.side_to_move());
+                    
+                    // Create the last move info
+                    let last_move = LastMove {
+                        from,
+                        to,
+                    };
+                    
+                    // Get the updated game status
+                    let game_status = get_game_status(&game);
+                    
+                    // Create the message to broadcast
+                    let msg = ServerMessage {
+                        message_type: "move_made".to_string(),
+                        game_id: Some(self.game_id.clone()),
+                        fen: Some(game.current_position().to_string()),
+                        color: None,
+                        error: None,
+                        available_moves: None,
+                        last_move: Some(last_move),
+                        game_status: Some(game_status),
+                        white_time_ms: Some(game_state.white_time_ms),
+                        black_time_ms: Some(game_state.black_time_ms),
+                        increment_ms: Some(game_state.increment_ms),
+                    };
+                    
+                    self.broadcast_to_game(&self.game_id, &msg);
+                } else {
+                    // Move was invalid
+                    let error_msg = ServerMessage {
+                        message_type: "error".to_string(),
+                        game_id: Some(self.game_id.clone()),
+                        fen: None,
+                        color: None,
+                        error: Some("Invalid move".to_string()),
+                        available_moves: None,
+                        last_move: None,
+                        game_status: None,
+                        white_time_ms: None,
+                        black_time_ms: None,
+                        increment_ms: None,
+                    };
+                    ctx.text(serde_json::to_string(&error_msg).unwrap());
+                }
             } else {
-                // Move was invalid
                 let error_msg = ServerMessage {
                     message_type: "error".to_string(),
                     game_id: Some(self.game_id.clone()),
                     fen: None,
                     color: None,
-                    error: Some("Invalid move".to_string()),
+                    error: Some("No piece at the selected square".to_string()),
                     available_moves: None,
                     last_move: None,
                     game_status: None,
+                    white_time_ms: None,
+                    black_time_ms: None,
+                    increment_ms: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
             }
@@ -616,12 +706,15 @@ impl ChessWebSocket {
                 available_moves: None,
                 last_move: None,
                 game_status: None,
+                white_time_ms: None,
+                black_time_ms: None,
+                increment_ms: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
         }
     }
 
-    fn handle_get_moves(&mut self, from: String, ctx: &mut ws::WebsocketContext<Self>) {
+    fn handle_get_moves(&mut self, msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
         if self.game_id.is_empty() {
             let error_msg = ServerMessage {
                 message_type: "error".to_string(),
@@ -632,22 +725,82 @@ impl ChessWebSocket {
                 available_moves: None,
                 last_move: None,
                 game_status: None,
+                white_time_ms: None,
+                black_time_ms: None,
+                increment_ms: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
             return;
         }
 
-        let games = self.app_state.games.lock().unwrap();
-        if let Some(game_state) = games.get(&self.game_id) {
+        let from = match msg.move_from {
+            Some(from) => from,
+            None => {
+                let error_msg = ServerMessage {
+                    message_type: "error".to_string(),
+                    game_id: Some(self.game_id.clone()),
+                    fen: None,
+                    color: None,
+                    error: Some("No from square provided".to_string()),
+                    available_moves: None,
+                    last_move: None,
+                    game_status: None,
+                    white_time_ms: None,
+                    black_time_ms: None,
+                    increment_ms: None,
+                };
+                ctx.text(serde_json::to_string(&error_msg).unwrap());
+                return;
+            }
+        };
+        
+        let mut games = self.app_state.games.lock().unwrap();
+        
+        if let Some(game_state) = games.get_mut(&self.game_id) {
             // Parse the from square
             let from_square = Square::from_str(&from.to_lowercase()).unwrap();
             let board = game_state.game.current_position();
-
+            
             // Check if there's a piece at the square
             if let Some(piece) = board.piece_on(from_square) {
+                // Check if it's the player's turn
+                let current_turn = game_state.game.side_to_move();
+                let player_color = if game_state.white_player.as_ref() == Some(&self.id) {
+                    Some(Color::White)
+                } else if game_state.black_player.as_ref() == Some(&self.id) {
+                    Some(Color::Black)
+                } else {
+                    None
+                };
+                
+                info!("Turn check: current_turn={:?}, player_color={:?}, player_id={}, white_player={:?}, black_player={:?}", 
+                      current_turn, player_color, self.id, game_state.white_player, game_state.black_player);
+                
+                if player_color != Some(current_turn) {
+                    let error_msg = ServerMessage {
+                        message_type: "error".to_string(),
+                        game_id: Some(self.game_id.clone()),
+                        fen: None,
+                        color: None,
+                        error: Some("Not your turn".to_string()),
+                        available_moves: None,
+                        last_move: None,
+                        game_status: None,
+                        white_time_ms: None,
+                        black_time_ms: None,
+                        increment_ms: None,
+                    };
+                    ctx.text(serde_json::to_string(&error_msg).unwrap());
+                    return;
+                }
+                
                 // Check if the piece belongs to the player
                 let piece_color = board.color_on(from_square).unwrap();
-                if self.color != Some(piece_color) {
+                
+                info!("Piece color check: piece={:?}, piece_color={:?}, player_color={:?}, self.color={:?}", 
+                      piece, piece_color, player_color, self.color);
+                
+                if player_color != Some(piece_color) {
                     let error_msg = ServerMessage {
                         message_type: "error".to_string(),
                         game_id: Some(self.game_id.clone()),
@@ -657,6 +810,9 @@ impl ChessWebSocket {
                         available_moves: None,
                         last_move: None,
                         game_status: None,
+                        white_time_ms: None,
+                        black_time_ms: None,
+                        increment_ms: None,
                     };
                     ctx.text(serde_json::to_string(&error_msg).unwrap());
                     return;
@@ -680,6 +836,9 @@ impl ChessWebSocket {
                     available_moves: Some(valid_moves),
                     last_move: None,
                     game_status: None,
+                    white_time_ms: None,
+                    black_time_ms: None,
+                    increment_ms: None,
                 };
                 ctx.text(serde_json::to_string(&msg).unwrap());
             } else {
@@ -692,6 +851,9 @@ impl ChessWebSocket {
                     available_moves: None,
                     last_move: None,
                     game_status: None,
+                    white_time_ms: None,
+                    black_time_ms: None,
+                    increment_ms: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
             }
@@ -705,6 +867,9 @@ impl ChessWebSocket {
                 available_moves: None,
                 last_move: None,
                 game_status: None,
+                white_time_ms: None,
+                black_time_ms: None,
+                increment_ms: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
         }

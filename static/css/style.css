@@ -45,6 +45,35 @@ h1 {
     margin-bottom: 15px;
 }
 
+.create-container {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.time-controls {
+    display: flex;
+    gap: 15px;
+}
+
+.time-control-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.time-control-item label {
+    font-size: 14px;
+    color: #555;
+}
+
+.time-control-item select {
+    padding: 5px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background-color: #fff;
+}
+
 .btn {
     padding: 10px 15px;
     background-color: #3498db;
@@ -88,6 +117,60 @@ h1 {
 
 .game-id, .player-color {
     font-weight: 500;
+}
+
+.timers {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 15px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+}
+
+.timer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.timer-label {
+    font-weight: 500;
+    color: #555;
+}
+
+.timer-display {
+    font-family: 'Courier New', monospace;
+    font-size: 1.2rem;
+    font-weight: 700;
+    padding: 5px 10px;
+    border-radius: 4px;
+    background-color: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.white-timer .timer-display {
+    color: #333;
+}
+
+.black-timer .timer-display {
+    color: #333;
+}
+
+.active-timer .timer-display {
+    background-color: #e6f7ff;
+    border-left: 3px solid #1890ff;
+}
+
+.low-time .timer-display {
+    color: #f5222d;
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.8; }
+    100% { opacity: 1; }
 }
 
 .chessboard-container {

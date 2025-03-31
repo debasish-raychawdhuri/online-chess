@@ -17,7 +17,35 @@
             <div id="game-status" class="status">Welcome to Multiplayer Chess</div>
             
             <div class="buttons">
-                <button id="create-game" class="btn" disabled>Create New Game</button>
+                <div class="create-container">
+                    <button id="create-game" class="btn" disabled>Create New Game</button>
+                    <div class="time-controls">
+                        <div class="time-control-item">
+                            <label for="start-time">Time (min):</label>
+                            <select id="start-time" disabled>
+                                <option value="1">1</option>
+                                <option value="3">3</option>
+                                <option value="5">5</option>
+                                <option value="10">10</option>
+                                <option value="15" selected>15</option>
+                                <option value="30">30</option>
+                                <option value="60">60</option>
+                            </select>
+                        </div>
+                        <div class="time-control-item">
+                            <label for="increment">Increment (sec):</label>
+                            <select id="increment" disabled>
+                                <option value="0">0</option>
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                                <option value="5">5</option>
+                                <option value="10" selected>10</option>
+                                <option value="15">15</option>
+                                <option value="30">30</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
                 <div class="join-container">
                     <input type="text" id="game-id-input" placeholder="Game ID" disabled>
                     <button id="join-game" class="btn" disabled>Join Game</button>
@@ -27,6 +55,17 @@
             <div id="player-info" class="player-info">
                 <div id="game-id-display" class="game-id"></div>
                 <div id="player-color" class="player-color"></div>
+            </div>
+            
+            <div class="timers">
+                <div class="timer white-timer">
+                    <div class="timer-label">White:</div>
+                    <div id="white-time" class="timer-display">15:00</div>
+                </div>
+                <div class="timer black-timer">
+                    <div class="timer-label">Black:</div>
+                    <div id="black-time" class="timer-display">15:00</div>
+                </div>
             </div>
         </div>
         

@@ -67,7 +67,7 @@ class Chess {
     /**
      * Get the color of a piece
      * @param {string} piece - The piece code (e.g., 'K', 'p')
-     * @returns {string} - 'white' or 'black'
+     * @returns {string} - 'white' for white or 'black' for black
      */
     getPieceColor(piece) {
         if (!piece) return null;
