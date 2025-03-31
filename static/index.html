@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiplayer Chess</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Multiplayer Chess</h1>
+        
+        <div class="game-controls">
+            <div id="connection-status" class="status">Connecting...</div>
+            <div id="game-status" class="status">Welcome to Multiplayer Chess</div>
+            
+            <div class="buttons">
+                <button id="create-game" class="btn" disabled>Create New Game</button>
+                <div class="join-container">
+                    <input type="text" id="game-id-input" placeholder="Game ID" disabled>
+                    <button id="join-game" class="btn" disabled>Join Game</button>
+                </div>
+            </div>
+            
+            <div id="player-info" class="player-info">
+                <div id="game-id-display" class="game-id"></div>
+                <div id="player-color" class="player-color"></div>
+            </div>
+        </div>
+        
+        <div class="chessboard-container">
+            <div id="chessboard" class="chessboard"></div>
+        </div>
+    </div>
+    
+    <script src="/static/js/chess.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
