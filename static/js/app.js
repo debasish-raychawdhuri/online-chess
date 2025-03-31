@@ -232,6 +232,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 break;
                 
+            case 'time_sync':
+                // Update timer values
+                if (message.white_time_ms !== undefined) whiteTimeMs = message.white_time_ms;
+                if (message.black_time_ms !== undefined) blackTimeMs = message.black_time_ms;
+                
+                // Update timers display
+                updateTimerDisplays();
+                
+                // Update active color
+                activeColor = message.active_color;
+                
+                break;
+                
             default:
                 console.log('Unknown message type:', message.message_type);
         }
@@ -272,7 +285,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const incrementSeconds = parseInt(incrementSelect.value, 10);
         
         const message = {
-            action: 'create',
+            message_type: 'create',
             start_time_minutes: startTimeMinutes,
             increment_seconds: incrementSeconds
         };
@@ -295,7 +308,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         const message = {
-            action: 'join',
+            message_type: 'join',
             game_id: gameIdToJoin
         };
         
@@ -348,7 +361,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (validMoves.includes(squareName)) {
                         // Make the move
                         const message = {
-                            action: 'move',
+                            message_type: 'move',
                             move_from: fromSquare,
                             move_to: squareName
                         };
@@ -447,7 +460,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     // Request valid moves from the server
                     const message = {
-                        action: 'get_moves',
+                        message_type: 'get_moves',
                         move_from: square
                     };
                     
@@ -500,7 +513,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Request valid moves from the server
             const message = {
-                action: 'get_moves',
+                message_type: 'get_moves',
                 move_from: squareName
             };
             
@@ -510,7 +523,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (validMoves.includes(squareName)) {
                 // Make the move
                 const message = {
-                    action: 'move',
+                    message_type: 'move',
                     move_from: selectedSquare,
                     move_to: squareName
                 };
@@ -538,7 +551,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     // Request valid moves for the new square
                     const message = {
-                        action: 'get_moves',
+                        message_type: 'get_moves',
                         move_from: squareName
                     };
                     
@@ -558,7 +571,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!isConnected || !gameId) return;
         
         const message = {
-            action: 'get_moves',
+            message_type: 'get_moves',
             game_id: gameId,
             move_from: squareName
         };
@@ -667,30 +680,16 @@ document.addEventListener('DOMContentLoaded', () => {
         lastMoveTime = Date.now();
         console.log('Starting timers with active color:', activeColor);
         
+        // Send a time sync request to the server every second
         timerInterval = setInterval(() => {
-            const now = Date.now();
-            const elapsed = now - lastMoveTime;
-            
-            // Only update the active player's timer
-            if (activeColor === 'white') {
-                whiteTimeMs = Math.max(0, whiteTimeMs - 100);
-                console.log('White time updated:', whiteTimeMs);
-            } else {
-                blackTimeMs = Math.max(0, blackTimeMs - 100);
-                console.log('Black time updated:', blackTimeMs);
+            // Request time update from server
+            if (socket && isConnected && gameId) {
+                socket.send(JSON.stringify({
+                    message_type: 'time_sync',
+                    game_id: gameId
+                }));
             }
-            
-            updateTimerDisplays();
-            
-            // Check for time out
-            if (whiteTimeMs <= 0) {
-                gameStatus.textContent = 'White lost on time! Black wins!';
-                stopTimers();
-            } else if (blackTimeMs <= 0) {
-                gameStatus.textContent = 'Black lost on time! White wins!';
-                stopTimers();
-            }
-        }, 100);
+        }, 1000);
     };
 
     // Stop the timers

@@ -2,6 +2,7 @@ use actix::*;
 use actix_files as fs;
 use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer, Responder};
 use actix_web_actors::ws;
+use actix::prelude::*;
 use chess::{ChessMove, Color, Game, GameResult, MoveGen, Square};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -19,60 +20,6 @@ struct ChessWebSocket {
     app_state: web::Data<AppState>,
     game_id: String,
     color: Option<Color>,
-}
-
-// Application state shared between connections
-struct AppState {
-    games: Mutex<HashMap<String, GameState>>,
-    connections: Mutex<HashMap<String, Vec<String>>>,
-    sessions: Mutex<HashMap<String, Addr<ChessWebSocket>>>,
-}
-
-// Game state for a specific game
-struct GameState {
-    game: Game,
-    white_player: Option<String>,
-    black_player: Option<String>,
-    white_time_ms: u64,
-    black_time_ms: u64,
-    increment_ms: u64,
-    last_move_time: Option<std::time::Instant>,
-    active_player: Option<Color>,
-}
-
-// Message sent from client to server
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct ClientMessage {
-    action: String,
-    game_id: Option<String>,
-    move_from: Option<String>,
-    move_to: Option<String>,
-    color_preference: Option<String>,
-    start_time_minutes: Option<u64>,
-    increment_seconds: Option<u64>,
-}
-
-// Message sent from server to client
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct ServerMessage {
-    message_type: String,
-    game_id: Option<String>,
-    fen: Option<String>,
-    color: Option<String>,
-    error: Option<String>,
-    available_moves: Option<Vec<String>>,
-    last_move: Option<LastMove>,
-    game_status: Option<String>,
-    white_time_ms: Option<u64>,
-    black_time_ms: Option<u64>,
-    increment_ms: Option<u64>,
-}
-
-// Last move information
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct LastMove {
-    from: String,
-    to: String,
 }
 
 impl Actor for ChessWebSocket {
@@ -134,6 +81,62 @@ impl Actor for ChessWebSocket {
     }
 }
 
+// Application state shared between connections
+struct AppState {
+    games: Mutex<HashMap<String, GameState>>,
+    connections: Mutex<HashMap<String, Vec<String>>>,
+    sessions: Mutex<HashMap<String, Addr<ChessWebSocket>>>,
+}
+
+// Game state for a specific game
+struct GameState {
+    game: Game,
+    white_player: Option<String>,
+    black_player: Option<String>,
+    white_time_ms: u64,
+    black_time_ms: u64,
+    increment_ms: u64,
+    last_move_time: Option<std::time::Instant>,
+    active_player: Option<Color>,
+    game_result: Option<GameResult>,
+}
+
+// Message sent from client to server
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ClientMessage {
+    message_type: String,
+    game_id: Option<String>,
+    move_from: Option<String>,
+    move_to: Option<String>,
+    color_preference: Option<String>,
+    start_time_minutes: Option<u64>,
+    increment_seconds: Option<u64>,
+}
+
+// Message sent from server to client
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ServerMessage {
+    message_type: String,
+    game_id: Option<String>,
+    fen: Option<String>,
+    color: Option<String>,
+    error: Option<String>,
+    available_moves: Option<Vec<String>>,
+    last_move: Option<LastMove>,
+    game_status: Option<String>,
+    white_time_ms: Option<u64>,
+    black_time_ms: Option<u64>,
+    increment_ms: Option<u64>,
+    active_color: Option<String>,
+}
+
+// Last move information
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct LastMove {
+    from: String,
+    to: String,
+}
+
 // Message type for WebSocket communication
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -153,92 +156,41 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ChessWebSocket {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
             Ok(ws::Message::Ping(msg)) => {
-                info!("Received ping from {}", self.id);
                 ctx.pong(&msg);
             }
             Ok(ws::Message::Pong(_)) => {
-                info!("Received pong from {}", self.id);
+                // Do nothing for pong messages
             }
             Ok(ws::Message::Text(text)) => {
-                info!("Received text message from {}: {}", self.id, text);
-                self.handle_message(text.to_string(), ctx);
+                info!("Received text message: {}", text);
+                match serde_json::from_str::<ClientMessage>(text.as_ref()) {
+                    Ok(client_msg) => {
+                        info!("Parsed client message: {:?}", client_msg);
+                        self.handle_message(client_msg, ctx);
+                    }
+                    Err(e) => {
+                        warn!("Error parsing client message: {}", e);
+                        ctx.text(format!("{{\"error\": \"Invalid message format: {}\"}}", e));
+                    }
+                }
             }
-            Ok(ws::Message::Binary(bin)) => {
-                info!("Received binary message from {}: {} bytes", self.id, bin.len());
+            Ok(ws::Message::Binary(_)) => {
+                warn!("Binary messages are not supported");
+                ctx.text("{\"error\": \"Binary messages are not supported\"}");
             }
             Ok(ws::Message::Close(reason)) => {
-                info!("Received close message from {}: {:?}", self.id, reason);
+                info!("Connection closed: {:?}", reason);
                 ctx.close(reason);
+                ctx.stop();
             }
             _ => {
-                info!("Received unknown message type from {}", self.id);
+                ctx.stop();
             }
         }
     }
 }
 
 impl ChessWebSocket {
-    fn handle_message(&mut self, text: impl AsRef<str>, ctx: &mut ws::WebsocketContext<Self>) {
-        info!("Received message: {}", text.as_ref());
-        match serde_json::from_str::<ClientMessage>(text.as_ref()) {
-            Ok(client_msg) => {
-                info!("Parsed client message: {:?}", client_msg);
-                match client_msg.action.as_str() {
-                    "create" => {
-                        info!("Processing create action");
-                        self.handle_create(client_msg, ctx);
-                    }
-                    "join" => {
-                        info!("Processing join action with game_id: {:?}", client_msg.game_id);
-                        self.handle_join(client_msg, ctx);
-                    }
-                    "move" => {
-                        info!("Move action received: from: {:?}, to: {:?}", client_msg.move_from, client_msg.move_to);
-                        self.handle_move(client_msg, ctx);
-                    }
-                    "get_moves" => {
-                        info!("Get moves action received: from: {:?}", client_msg.move_from);
-                        self.handle_get_moves(client_msg, ctx);
-                    }
-                    _ => {
-                        info!("Unknown action: {}", client_msg.action);
-                        let error_msg = ServerMessage {
-                            message_type: "error".to_string(),
-                            game_id: if self.game_id.is_empty() { None } else { Some(self.game_id.clone()) },
-                            fen: None,
-                            color: None,
-                            error: Some(format!("Unknown action: {}", client_msg.action)),
-                            available_moves: None,
-                            last_move: None,
-                            game_status: None,
-                            white_time_ms: None,
-                            black_time_ms: None,
-                            increment_ms: None,
-                        };
-                        ctx.text(serde_json::to_string(&error_msg).unwrap());
-                    }
-                }
-            }
-            Err(e) => {
-                info!("Error parsing client message: {}", e);
-                let error_msg = ServerMessage {
-                    message_type: "error".to_string(),
-                    game_id: if self.game_id.is_empty() { None } else { Some(self.game_id.clone()) },
-                    fen: None,
-                    color: None,
-                    error: Some(format!("Invalid message format: {}", e)),
-                    available_moves: None,
-                    last_move: None,
-                    game_status: None,
-                    white_time_ms: None,
-                    black_time_ms: None,
-                    increment_ms: None,
-                };
-                ctx.text(serde_json::to_string(&error_msg).unwrap());
-            }
-        }
-    }
-
     fn broadcast_to_game(&self, game_id: &str, message: &ServerMessage) {
         info!("Broadcasting message to game {}: {:?}", game_id, message.message_type);
         
@@ -282,7 +234,7 @@ impl ChessWebSocket {
         }
     }
 
-    fn handle_create(&mut self, msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
+    fn handle_create(&mut self, _msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
         info!("Creating a new game for player {}", self.id);
         
         // Create a new game with a unique ID
@@ -309,6 +261,7 @@ impl ChessWebSocket {
                 increment_ms: 10 * 1000,
                 last_move_time: None,
                 active_player: Some(Color::White),
+                game_result: None,
             },
         );
         info!("Created new game {} with player {} as white", game_id, self.id);
@@ -336,6 +289,7 @@ impl ChessWebSocket {
             white_time_ms: Some(15 * 60 * 1000),
             black_time_ms: Some(15 * 60 * 1000),
             increment_ms: Some(10 * 1000),
+            active_color: None,
         };
         
         info!("Sending game_created message to player {}", self.id);
@@ -376,7 +330,6 @@ impl ChessWebSocket {
                 drop(games);
                 
                 // Clear the game ID and color from this connection
-                let old_game_id = self.game_id.clone();
                 self.game_id = String::new();
                 self.color = None;
                 info!("Reset game ID and color for player {}", self.id);
@@ -413,6 +366,7 @@ impl ChessWebSocket {
                         white_time_ms: None,
                         black_time_ms: None,
                         increment_ms: None,
+                        active_color: None,
                     };
                     ctx.text(serde_json::to_string(&error_msg).unwrap());
                     return;
@@ -460,6 +414,7 @@ impl ChessWebSocket {
                     white_time_ms: Some(game_state.white_time_ms),
                     black_time_ms: Some(game_state.black_time_ms),
                     increment_ms: Some(game_state.increment_ms),
+                    active_color: None,
                 };
                 
                 info!("Sending joined message to player {}", self.id);
@@ -478,6 +433,7 @@ impl ChessWebSocket {
                     white_time_ms: Some(game_state.white_time_ms),
                     black_time_ms: Some(game_state.black_time_ms),
                     increment_ms: Some(game_state.increment_ms),
+                    active_color: None,
                 };
                 
                 // Drop the locks before broadcasting
@@ -501,6 +457,7 @@ impl ChessWebSocket {
                     white_time_ms: None,
                     black_time_ms: None,
                     increment_ms: None,
+                    active_color: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
             }
@@ -519,6 +476,7 @@ impl ChessWebSocket {
                 white_time_ms: None,
                 black_time_ms: None,
                 increment_ms: None,
+                active_color: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
         }
@@ -540,6 +498,7 @@ impl ChessWebSocket {
                 white_time_ms: None,
                 black_time_ms: None,
                 increment_ms: None,
+                active_color: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
             return;
@@ -561,6 +520,7 @@ impl ChessWebSocket {
                 white_time_ms: None,
                 black_time_ms: None,
                 increment_ms: None,
+                active_color: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
             return;
@@ -594,6 +554,7 @@ impl ChessWebSocket {
                     white_time_ms: None,
                     black_time_ms: None,
                     increment_ms: None,
+                    active_color: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
                 return;
@@ -625,7 +586,16 @@ impl ChessWebSocket {
                                     game_state.white_time_ms += game_state.increment_ms;
                                 } else {
                                     game_state.white_time_ms = 0;
-                                    // Player lost on time
+                                    // Player lost on time - check for insufficient material
+                                    if has_insufficient_material(&game.current_position()) {
+                                        info!("White lost on time but opponent has insufficient material - draw");
+                                        // Set game result to draw
+                                        game_state.game_result = Some(GameResult::DrawDeclared);
+                                    } else {
+                                        info!("White lost on time");
+                                        // Set game result to black wins
+                                        game_state.game_result = Some(GameResult::WhiteResigns);
+                                    }
                                 }
                             },
                             Some(Color::Black) => {
@@ -635,7 +605,16 @@ impl ChessWebSocket {
                                     game_state.black_time_ms += game_state.increment_ms;
                                 } else {
                                     game_state.black_time_ms = 0;
-                                    // Player lost on time
+                                    // Player lost on time - check for insufficient material
+                                    if has_insufficient_material(&game.current_position()) {
+                                        info!("Black lost on time but opponent has insufficient material - draw");
+                                        // Set game result to draw
+                                        game_state.game_result = Some(GameResult::DrawDeclared);
+                                    } else {
+                                        info!("Black lost on time");
+                                        // Set game result to white wins
+                                        game_state.game_result = Some(GameResult::BlackResigns);
+                                    }
                                 }
                             },
                             None => {}
@@ -656,7 +635,7 @@ impl ChessWebSocket {
                     };
                     
                     // Get the updated game status
-                    let game_status = get_game_status(&game);
+                    let game_status = get_game_status(game, game_state.game_result);
                     
                     // Create the message to broadcast
                     let msg = ServerMessage {
@@ -671,6 +650,7 @@ impl ChessWebSocket {
                         white_time_ms: Some(game_state.white_time_ms),
                         black_time_ms: Some(game_state.black_time_ms),
                         increment_ms: Some(game_state.increment_ms),
+                        active_color: None,
                     };
                     
                     self.broadcast_to_game(&self.game_id, &msg);
@@ -688,6 +668,7 @@ impl ChessWebSocket {
                         white_time_ms: None,
                         black_time_ms: None,
                         increment_ms: None,
+                        active_color: None,
                     };
                     ctx.text(serde_json::to_string(&error_msg).unwrap());
                 }
@@ -704,6 +685,7 @@ impl ChessWebSocket {
                     white_time_ms: None,
                     black_time_ms: None,
                     increment_ms: None,
+                    active_color: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
             }
@@ -720,6 +702,7 @@ impl ChessWebSocket {
                 white_time_ms: None,
                 black_time_ms: None,
                 increment_ms: None,
+                active_color: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
         }
@@ -739,6 +722,7 @@ impl ChessWebSocket {
                 white_time_ms: None,
                 black_time_ms: None,
                 increment_ms: None,
+                active_color: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
             return;
@@ -759,6 +743,7 @@ impl ChessWebSocket {
                     white_time_ms: None,
                     black_time_ms: None,
                     increment_ms: None,
+                    active_color: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
                 return;
@@ -800,6 +785,7 @@ impl ChessWebSocket {
                         white_time_ms: None,
                         black_time_ms: None,
                         increment_ms: None,
+                        active_color: None,
                     };
                     ctx.text(serde_json::to_string(&error_msg).unwrap());
                     return;
@@ -824,6 +810,7 @@ impl ChessWebSocket {
                         white_time_ms: None,
                         black_time_ms: None,
                         increment_ms: None,
+                        active_color: None,
                     };
                     ctx.text(serde_json::to_string(&error_msg).unwrap());
                     return;
@@ -850,6 +837,7 @@ impl ChessWebSocket {
                     white_time_ms: None,
                     black_time_ms: None,
                     increment_ms: None,
+                    active_color: None,
                 };
                 ctx.text(serde_json::to_string(&msg).unwrap());
             } else {
@@ -865,6 +853,7 @@ impl ChessWebSocket {
                     white_time_ms: None,
                     black_time_ms: None,
                     increment_ms: None,
+                    active_color: None,
                 };
                 ctx.text(serde_json::to_string(&error_msg).unwrap());
             }
@@ -881,8 +870,155 @@ impl ChessWebSocket {
                 white_time_ms: None,
                 black_time_ms: None,
                 increment_ms: None,
+                active_color: None,
             };
             ctx.text(serde_json::to_string(&error_msg).unwrap());
+        }
+    }
+
+    fn handle_time_sync(&mut self, msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
+        info!("Time sync request received from player {}", self.id);
+        
+        // Get the game ID from the message
+        let game_id = match msg.game_id {
+            Some(id) => id,
+            None => {
+                info!("Time sync request missing game ID");
+                let error_msg = ServerMessage {
+                    message_type: "error".to_string(),
+                    game_id: None,
+                    fen: None,
+                    color: None,
+                    error: Some("Game ID is required".to_string()),
+                    available_moves: None,
+                    last_move: None,
+                    game_status: None,
+                    white_time_ms: None,
+                    black_time_ms: None,
+                    increment_ms: None,
+                    active_color: None,
+                };
+                ctx.text(serde_json::to_string(&error_msg).unwrap());
+                return;
+            }
+        };
+        
+        // Get the game state
+        let mut games = self.app_state.games.lock().unwrap();
+        if let Some(game_state) = games.get_mut(&game_id) {
+            // Update the time for the active player if a move has been made
+            if let Some(last_move_time) = game_state.last_move_time {
+                let now = std::time::Instant::now();
+                let elapsed = now.duration_since(last_move_time).as_millis() as u64;
+                
+                // Only update the time if the game is in progress
+                if game_state.white_player.is_some() && game_state.black_player.is_some() {
+                    // Update the time for the active player
+                    match game_state.active_player {
+                        Some(Color::White) => {
+                            if game_state.white_time_ms > elapsed {
+                                game_state.white_time_ms -= elapsed;
+                            } else {
+                                game_state.white_time_ms = 0;
+                                // Player lost on time - check for insufficient material
+                                if has_insufficient_material(&game_state.game.current_position()) {
+                                    info!("White lost on time but opponent has insufficient material - draw");
+                                    // Set game result to draw
+                                    game_state.game_result = Some(GameResult::DrawDeclared);
+                                } else {
+                                    info!("White lost on time");
+                                    // Set game result to black wins
+                                    game_state.game_result = Some(GameResult::WhiteResigns);
+                                }
+                            }
+                        },
+                        Some(Color::Black) => {
+                            if game_state.black_time_ms > elapsed {
+                                game_state.black_time_ms -= elapsed;
+                            } else {
+                                game_state.black_time_ms = 0;
+                                // Player lost on time - check for insufficient material
+                                if has_insufficient_material(&game_state.game.current_position()) {
+                                    info!("Black lost on time but opponent has insufficient material - draw");
+                                    // Set game result to draw
+                                    game_state.game_result = Some(GameResult::DrawDeclared);
+                                } else {
+                                    info!("Black lost on time");
+                                    // Set game result to white wins
+                                    game_state.game_result = Some(GameResult::BlackResigns);
+                                }
+                            }
+                        },
+                        None => {}
+                    }
+                    
+                    // Update the last move time
+                    game_state.last_move_time = Some(now);
+                }
+            }
+            
+            // Get the active color from the current position
+            let active_color = match game_state.game.side_to_move() {
+                Color::White => "white",
+                Color::Black => "black",
+            };
+            
+            // Get the game status
+            let game_status = get_game_status(&game_state.game, game_state.game_result);
+            
+            // Send the time sync response
+            let time_sync_msg = ServerMessage {
+                message_type: "time_sync".to_string(),
+                game_id: Some(game_id.clone()),
+                fen: Some(game_state.game.current_position().to_string()),
+                color: None,
+                error: None,
+                available_moves: None,
+                last_move: None,
+                game_status: Some(game_status),
+                white_time_ms: Some(game_state.white_time_ms),
+                black_time_ms: Some(game_state.black_time_ms),
+                increment_ms: Some(game_state.increment_ms),
+                active_color: Some(active_color.to_string()),
+            };
+            
+            // Drop the lock before broadcasting
+            drop(games);
+            
+            // Broadcast the time sync response to all players in the game
+            self.broadcast_to_game(&game_id, &time_sync_msg);
+        } else {
+            // Game not found
+            info!("Game {} not found for time sync", game_id);
+            let error_msg = ServerMessage {
+                message_type: "error".to_string(),
+                game_id: Some(game_id),
+                fen: None,
+                color: None,
+                error: Some("Game not found".to_string()),
+                available_moves: None,
+                last_move: None,
+                game_status: None,
+                white_time_ms: None,
+                black_time_ms: None,
+                increment_ms: None,
+                active_color: None,
+            };
+            ctx.text(serde_json::to_string(&error_msg).unwrap());
+        }
+    }
+
+    fn handle_message(&mut self, msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
+        match msg.message_type.as_str() {
+            "create" => self.handle_create(msg, ctx),
+            "join" => self.handle_join(msg, ctx),
+            "move" => self.handle_move(msg, ctx),
+            "get_moves" => self.handle_get_moves(msg, ctx),
+            "time_sync" => self.handle_time_sync(msg, ctx),
+            _ => {
+                info!("Unknown message type: {}", msg.message_type);
+                ctx.text(format!("{{\"error\": \"Unknown message type: {}\"}}", msg.message_type));
+            }
         }
     }
 }
@@ -946,8 +1082,8 @@ fn color_to_string(color: Color) -> String {
     }
 }
 
-fn get_game_status(game: &Game) -> String {
-    match game.result() {
+fn get_game_status(game: &Game, game_result: Option<GameResult>) -> String {
+    match game_result {
         Some(GameResult::WhiteCheckmates) => "white_wins".to_string(),
         Some(GameResult::BlackCheckmates) => "black_wins".to_string(),
         Some(GameResult::WhiteResigns) => "black_wins".to_string(),
@@ -965,4 +1101,105 @@ fn get_game_status(game: &Game) -> String {
             }
         }
     }
+}
+
+fn has_insufficient_material(board: &chess::Board) -> bool {
+    let mut white_pawns = 0;
+    let mut white_knights = 0;
+    let mut white_bishops = 0;
+    let mut white_rooks = 0;
+    let mut white_queens = 0;
+    let mut black_pawns = 0;
+    let mut black_knights = 0;
+    let mut black_bishops = 0;
+    let mut black_rooks = 0;
+    let mut black_queens = 0;
+
+    // Iterate through all possible squares on the board
+    for rank in 0..8 {
+        for file in 0..8 {
+            let square = chess::Square::make_square(chess::Rank::from_index(rank), chess::File::from_index(file));
+            if let Some(piece) = board.piece_on(square) {
+                match piece {
+                    chess::Piece::Pawn => {
+                        if board.color_on(square) == Some(chess::Color::White) {
+                            white_pawns += 1;
+                        } else {
+                            black_pawns += 1;
+                        }
+                    }
+                    chess::Piece::Knight => {
+                        if board.color_on(square) == Some(chess::Color::White) {
+                            white_knights += 1;
+                        } else {
+                            black_knights += 1;
+                        }
+                    }
+                    chess::Piece::Bishop => {
+                        if board.color_on(square) == Some(chess::Color::White) {
+                            white_bishops += 1;
+                        } else {
+                            black_bishops += 1;
+                        }
+                    }
+                    chess::Piece::Rook => {
+                        if board.color_on(square) == Some(chess::Color::White) {
+                            white_rooks += 1;
+                        } else {
+                            black_rooks += 1;
+                        }
+                    }
+                    chess::Piece::Queen => {
+                        if board.color_on(square) == Some(chess::Color::White) {
+                            white_queens += 1;
+                        } else {
+                            black_queens += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Check for insufficient material
+    if white_pawns == 0 && white_knights == 0 && white_bishops == 0 && white_rooks == 0 && white_queens == 0 {
+        // White has no pieces other than the king
+        if black_pawns == 0 && black_knights == 0 && black_bishops == 0 && black_rooks == 0 && black_queens == 0 {
+            // Black has no pieces other than the king
+            return true;
+        } else if black_pawns == 0 && black_knights == 0 && black_bishops == 0 && black_rooks == 0 && black_queens == 1 {
+            // Black has only one queen
+            return false;
+        } else if black_pawns == 0 && black_knights == 0 && black_bishops == 0 && black_rooks == 1 && black_queens == 0 {
+            // Black has only one rook
+            return false;
+        } else if black_pawns == 0 && black_knights == 0 && black_bishops == 1 && black_rooks == 0 && black_queens == 0 {
+            // Black has only one bishop
+            return true;
+        } else if black_pawns == 0 && black_knights == 1 && black_bishops == 0 && black_rooks == 0 && black_queens == 0 {
+            // Black has only one knight
+            return true;
+        }
+    } else if black_pawns == 0 && black_knights == 0 && black_bishops == 0 && black_rooks == 0 && black_queens == 0 {
+        // Black has no pieces other than the king
+        if white_pawns == 0 && white_knights == 0 && white_bishops == 0 && white_rooks == 0 && white_queens == 0 {
+            // White has no pieces other than the king
+            return true;
+        } else if white_pawns == 0 && white_knights == 0 && white_bishops == 0 && white_rooks == 0 && white_queens == 1 {
+            // White has only one queen
+            return false;
+        } else if white_pawns == 0 && white_knights == 0 && white_bishops == 0 && white_rooks == 1 && white_queens == 0 {
+            // White has only one rook
+            return false;
+        } else if white_pawns == 0 && white_knights == 0 && white_bishops == 1 && white_rooks == 0 && white_queens == 0 {
+            // White has only one bishop
+            return true;
+        } else if white_pawns == 0 && white_knights == 1 && white_bishops == 0 && white_rooks == 0 && white_queens == 0 {
+            // White has only one knight
+            return true;
+        }
+    }
+
+    false
 }
