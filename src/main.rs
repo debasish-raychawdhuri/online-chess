@@ -234,8 +234,14 @@ impl ChessWebSocket {
         }
     }
 
-    fn handle_create(&mut self, _msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
+    fn handle_create(&mut self, msg: ClientMessage, ctx: &mut ws::WebsocketContext<Self>) {
         info!("Creating a new game for player {}", self.id);
+        
+        // Get time settings from the message or use defaults
+        let start_time_minutes = msg.start_time_minutes.unwrap_or(15);
+        let increment_seconds = msg.increment_seconds.unwrap_or(10);
+        
+        info!("Game settings: {} minutes, {} seconds increment", start_time_minutes, increment_seconds);
         
         // Create a new game with a unique ID
         let game_id = Uuid::new_v4().to_string();
@@ -256,9 +262,9 @@ impl ChessWebSocket {
                 game: Game::new(),
                 white_player: Some(self.id.clone()),
                 black_player: None,
-                white_time_ms: 15 * 60 * 1000,
-                black_time_ms: 15 * 60 * 1000,
-                increment_ms: 10 * 1000,
+                white_time_ms: start_time_minutes * 60 * 1000,
+                black_time_ms: start_time_minutes * 60 * 1000,
+                increment_ms: increment_seconds * 1000,
                 last_move_time: None,
                 active_player: Some(Color::White),
                 game_result: None,
@@ -286,9 +292,9 @@ impl ChessWebSocket {
             available_moves: None,
             last_move: None,
             game_status: Some(game_status.to_string()),
-            white_time_ms: Some(15 * 60 * 1000),
-            black_time_ms: Some(15 * 60 * 1000),
-            increment_ms: Some(10 * 1000),
+            white_time_ms: Some(start_time_minutes * 60 * 1000),
+            black_time_ms: Some(start_time_minutes * 60 * 1000),
+            increment_ms: Some(increment_seconds * 1000),
             active_color: None,
         };
         
