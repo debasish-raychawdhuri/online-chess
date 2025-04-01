@@ -1,0 +1,29 @@
+mod game;
+mod models;
+mod routes;
+mod state;
+mod websocket;
+
+use actix_web::{web, App, HttpServer};
+use log::info;
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    // Initialize logger
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    
+    info!("Starting chess web app server at http://127.0.0.1:8080");
+    
+    // Create shared application state
+    let app_state = web::Data::new(state::AppState::new());
+    
+    // Start HTTP server
+    HttpServer::new(move || {
+        App::new()
+            .app_data(app_state.clone())
+            .configure(routes::configure_routes)
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
+}
