@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const joinGameBtn = document.getElementById('join-game');
     const gameIdInput = document.getElementById('game-id-input');
     const gameIdDisplay = document.getElementById('game-id-display');
+    const copyIdBtn = document.getElementById('copy-id-btn');
     const playerColorDisplay = document.getElementById('player-color');
     const playerInfo = document.getElementById('player-info');
     const gameStatus = document.getElementById('game-status');
@@ -88,7 +89,8 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'game_created':
                 gameId = message.game_id;
                 playerColor = message.color;
-                gameIdDisplay.textContent = `Game ID: ${gameId}`;
+                gameIdDisplay.textContent = `${gameId}`;
+                copyIdBtn.style.display = 'inline-block'; // Show the copy button when game ID is available
                 playerColorDisplay.textContent = `You are playing as: ${playerColor}`;
                 playerInfo.style.display = 'flex';
                 gameStatus.textContent = formatGameStatus(message.game_status || 'waiting_for_opponent');
@@ -107,6 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 gameId = message.game_id;
                 playerColor = message.color;
                 gameIdDisplay.textContent = `Game ID: ${gameId}`;
+                copyIdBtn.style.display = 'inline-block'; // Show the copy button when game ID is available
                 playerColorDisplay.textContent = `You are playing as: ${playerColor}`;
                 playerInfo.style.display = 'flex';
                 gameStatus.textContent = formatGameStatus(message.game_status || 'in_progress');
@@ -862,6 +865,40 @@ document.addEventListener('DOMContentLoaded', () => {
         // Add the dialog to the page
         document.body.appendChild(dialog);
     };
+
+    // Copy game ID functionality
+    copyIdBtn.addEventListener('click', () => {
+        if (gameId) {
+            // Get the full text as displayed to the user
+            const fullGameIdText = gameIdDisplay.innerText;
+            
+            // Create a temporary input element
+            const tempInput = document.createElement('input');
+            tempInput.value = fullGameIdText;
+            document.body.appendChild(tempInput);
+            
+            // Select the text
+            tempInput.select();
+            tempInput.setSelectionRange(0, 99999);
+            
+            // Copy the text
+            document.execCommand('copy');
+            
+            // Remove the temporary element
+            document.body.removeChild(tempInput);
+            
+            // Visual feedback
+            const originalText = copyIdBtn.textContent;
+            copyIdBtn.textContent = 'Copied!';
+            copyIdBtn.style.backgroundColor = '#27ae60';
+            
+            // Reset button after 1.5 seconds
+            setTimeout(() => {
+                copyIdBtn.textContent = originalText;
+                copyIdBtn.style.backgroundColor = '';
+            }, 1500);
+        }
+    });
 
     // Initialize the game
     initializeBoard();

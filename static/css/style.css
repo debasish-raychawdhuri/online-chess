@@ -115,8 +115,30 @@ h1 {
     border-radius: 4px;
 }
 
+.game-id-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
 .game-id, .player-color {
     font-weight: 500;
+}
+
+.small-btn {
+    padding: 3px 8px;
+    background-color: #3498db;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+    transition: background-color 0.2s;
+}
+
+.small-btn:hover {
+    background-color: #2980b9;
 }
 
 .timers {
